@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from typing import List, Dict, Tuple, Optional, Any
 
 from config import EnvConfig, DEFAULT_CONFIG
-from environment import create_resource_map, extract_agent_observation, calculate_utility
+from environment import create_resource_map, extract_agent_observation, calculate_utility, calculate_inventory_weight
 from agent import initialize_agents_isolated, execute_move, execute_gather, execute_consumption, execute_barter_subloop, Agent
 from network import MultiHeadGlobalBrain
 from dataset import ExpertDataset
@@ -75,10 +75,12 @@ def run_simulation_step(
     global_brain: MultiHeadGlobalBrain,
     config: EnvConfig = DEFAULT_CONFIG,
     optimizer: Optional[torch.optim.Optimizer] = None,
-    lr: float = 0.00025
+    lr: float = 0.00025,
+    deterministic: bool = False
 ) -> Dict[str, Any]:
     """
     Executes a single step of the multi-agent simulation loop and performs MAPPO Actor-Critic gradient updates.
+    Includes Action Exploration Sampling, Entropy Bonus, Advantage Clipping, and Survival Reward Shaping.
     """
     if optimizer is None:
         optimizer = torch.optim.Adam(global_brain.parameters(), lr=lr)
@@ -91,6 +93,13 @@ def run_simulation_step(
         return {"agents": agents, "global_brain": global_brain, "reset_needed": True}
 
     global_brain.train()
+    rew_cfg = getattr(config, 'rewards', None)
+    survival_bonus = rew_cfg.survival_bonus if rew_cfg else 0.1
+    death_penal = rew_cfg.death_penalty if rew_cfg else config.death_penal
+    danger_thresh = rew_cfg.danger_threshold if rew_cfg else (10.0, 8.0)
+    danger_scale = rew_cfg.danger_penalty_scale if rew_cfg else 0.04
+    entropy_coeff = rew_cfg.entropy_coeff if rew_cfg else 0.01
+    adv_clip = rew_cfg.advantage_clip if rew_cfg else 5.0
 
     for i, agent in enumerate(agents):
         if not agent.alive:
@@ -103,15 +112,28 @@ def run_simulation_step(
         # Forward pass through neural brain
         out = global_brain(state_tensor)
 
-        # Discrete Action Selection (Greedy / Argmax for policy execution)
         logits_action = out["logits_action"].squeeze(0)
-        action_idx = int(torch.argmax(logits_action).item()) + 1  # 1-indexed
+        dist_action = torch.distributions.Categorical(logits=logits_action)
 
         logits_barter = out["logits_barter"].squeeze(0)
-        barter_flag = (torch.argmax(logits_barter).item() == 1)
+        dist_barter = torch.distributions.Categorical(logits=logits_barter)
 
         logits_consume_type = out["logits_consume_type"].squeeze(0)
-        consume_type = int(torch.argmax(logits_consume_type).item()) + 1  # 1-indexed
+        dist_consume_type = torch.distributions.Categorical(logits=logits_consume_type)
+
+        if deterministic:
+            action_idx = int(torch.argmax(logits_action).item()) + 1
+            barter_flag = (torch.argmax(logits_barter).item() == 1)
+            consume_type = int(torch.argmax(logits_consume_type).item()) + 1
+        else:
+            action_sample = dist_action.sample()
+            action_idx = int(action_sample.item()) + 1
+
+            barter_sample = dist_barter.sample()
+            barter_flag = (barter_sample.item() == 1)
+
+            ctype_sample = dist_consume_type.sample()
+            consume_type = int(ctype_sample.item()) + 1
 
         drop_fraction = out["drop_amt"].squeeze(0).item()
         consume_fraction = out["consume_amt"].squeeze(0).item()
@@ -125,30 +147,51 @@ def run_simulation_step(
         agent = execute_consumption(agent, consume_type, consume_fraction, config)
 
         u_new = calculate_utility(agent, config)
-        reward = u_new - u_old
+        delta_u = u_new - u_old
+
+        # Reward Shaping: Delta Utility + Survival Bonus - Danger Penalty - Overburden Penalty - Death Penalty
+        reward = delta_u + survival_bonus
+
+        # Early stress warning when approaching danger levels (smooth policy gradient)
+        if agent.n < danger_thresh[0]:
+            reward -= danger_scale * (danger_thresh[0] - agent.n)
+        if agent.h < danger_thresh[1]:
+            reward -= danger_scale * (danger_thresh[1] - agent.h)
+
+        # Overburden Disutility Penalty (punishes over-stuffing inventory)
+        current_weight = calculate_inventory_weight(agent.inv, config.weights)
+        load_ratio = current_weight / max(1e-5, agent.max_storage)
+        pd = getattr(config, 'progressive_drain', None)
+        if pd and pd.enabled and load_ratio > pd.overburden_threshold:
+            excess_load = (load_ratio - pd.overburden_threshold) / (1.0 - pd.overburden_threshold + 1e-5)
+            overburden_pen = rew_cfg.overburden_penalty if rew_cfg and hasattr(rew_cfg, 'overburden_penalty') else 0.05
+            reward -= overburden_pen * (excess_load ** 2)
 
         if not agent.alive:
-            reward -= config.death_penal
+            reward -= death_penal
 
-        # MAPPO Advantage computation
+        # MAPPO Advantage computation with clipping
         reward_tensor = torch.tensor([reward], dtype=torch.float32)
         advantage = (reward_tensor - v_pred).detach()
+        advantage = torch.clamp(advantage, -adv_clip, adv_clip)
 
         # Critic MSE Loss
         loss_critic = F.mse_loss(v_pred, reward_tensor)
 
-        # Policy Losses weighted by Advantage
-        log_prob_act = F.log_softmax(logits_action, dim=-1)[action_idx - 1]
-        loss_action = -log_prob_act * advantage
+        # Policy Losses weighted by Advantage & Entropy Exploration Bonus
+        log_prob_act = dist_action.log_prob(torch.tensor(action_idx - 1))
+        entropy_act = dist_action.entropy()
+        loss_action = -log_prob_act * advantage - (entropy_coeff * entropy_act)
 
-        log_prob_ct = F.log_softmax(logits_consume_type, dim=-1)[consume_type - 1]
-        loss_ctype = -log_prob_ct * advantage
+        log_prob_ct = dist_consume_type.log_prob(torch.tensor(consume_type - 1))
+        entropy_ct = dist_consume_type.entropy()
+        loss_ctype = -log_prob_ct * advantage - (entropy_coeff * entropy_ct)
 
-        # Continuous control penalty weighted by advantage
+        # Continuous control guidance
         loss_camt = -advantage * torch.log(out["consume_amt"].squeeze(0) + 1e-8)
         loss_damt = -advantage * torch.log(out["drop_amt"].squeeze(0) + 1e-8)
 
-        total_step_loss = loss_critic + loss_action + loss_ctype + loss_camt + loss_damt
+        total_step_loss = loss_critic + loss_action + loss_ctype + (0.5 * (loss_camt + loss_damt))
 
         optimizer.zero_grad()
         total_step_loss.backward()
@@ -168,7 +211,7 @@ def run_curriculum_training(
     lr: float = 0.001
 ) -> MultiHeadGlobalBrain:
     """
-    Executes Curriculum Learning with progressive difficulty scaling on resource drain.
+    Executes Curriculum Learning with progressive difficulty scaling on resource drain and progressive upkeep.
     """
     steps_each = config.pre_training.steps_each
     prog_step = config.pre_training.progression
@@ -205,6 +248,12 @@ def run_curriculum_training(
             config.decrease[0] * current_multiplier,
             config.decrease[1] * current_multiplier
         )
+        if getattr(current_config, 'progressive_drain', None):
+            current_config.progressive_drain.scale = (
+                config.progressive_drain.scale[0] * current_multiplier,
+                config.progressive_drain.scale[1] * current_multiplier
+            )
+
         stage_name = f"Stage {stage_idx + 1} (Drain: {int(current_multiplier * 100)}%)"
 
         for agent in agents:
@@ -226,7 +275,8 @@ def run_curriculum_training(
         if step % 500 == 0 or step == total_steps:
             utilities = [calculate_utility(a, current_config) for a in agents]
             mean_lifespan = float(np.mean(dead_lifespans)) if len(dead_lifespans) > 0 else float(np.mean([a.survival_steps for a in agents]))
-            print(f"Step {step:05d} [{stage_name}] | Mean Utility: {np.mean(utilities):.2f} | Mean Lifespan: {mean_lifespan:.1f} steps")
+            alive_count = sum(1 for a in agents if a.alive)
+            print(f"Step {step:05d} [{stage_name}] | Alive: {alive_count}/{n_agents} | Mean Utility: {np.mean(utilities):.2f} | Mean Lifespan: {mean_lifespan:.1f} steps")
 
     print("-> Curriculum Training successfully completed!")
     return global_brain

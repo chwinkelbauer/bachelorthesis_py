@@ -11,7 +11,7 @@ from torch.utils.data import Dataset
 from typing import List, Dict, Tuple, Any
 
 from config import EnvConfig, DEFAULT_CONFIG
-from environment import create_resource_map, extract_agent_observation
+from environment import create_resource_map, extract_agent_observation, calculate_inventory_weight
 from agent import initialize_agents_isolated, execute_move, execute_gather, execute_consumption, Agent
 
 
@@ -37,10 +37,11 @@ def get_expert_decisions(
     config: EnvConfig = DEFAULT_CONFIG
 ) -> Dict[str, Any]:
     """
-    Rule-based expert policy:
-    1. Conservative consumption to satisfy hunger/cold.
-    2. Priority sequence: Starvation (<30) -> Cold (<30) -> Wealth (Gold).
-    3. Spatial navigation towards highest resource hubs within sight.
+    Rule-based expert policy adapted for progressive consumption & upkeep:
+    1. Homeostatic consumption: Consumes proactively when needs drop below comfort thresholds (35.0).
+    2. Dynamic target consumption amount scaled to current drain rate.
+    3. Priority sequence: Critical Hunger (<25) -> Critical Cold (<25) -> Food Buffer (<40) -> Wood Buffer (<35) -> Gold.
+    4. Spatial navigation towards localized resource hubs within sight.
     """
     pos_r, pos_c = agent.pos
     sight = config.sight
@@ -55,28 +56,38 @@ def get_expert_decisions(
     cur_wood = env_grid[pos_r, pos_c, 1]
     cur_gold = env_grid[pos_r, pos_c, 2]
 
-    # Consumption Logic
+    # 1. Consumption Logic with Progressive Drain Awareness
     consume_type = 1  # 1: None, 2: Food, 3: Wood
     consume_fraction = 0.0
 
     dec_f, dec_w = config.decrease
+    if getattr(config, 'progressive_drain', None) and config.progressive_drain.enabled:
+        pd = config.progressive_drain
+        rel_n = max(0.0, agent.n / max(1e-5, pd.ref_level[0]))
+        rel_h = max(0.0, agent.h / max(1e-5, pd.ref_level[1]))
+        dec_f *= (1.0 + pd.scale[0] * (rel_n ** pd.exponent[0]))
+        dec_w *= (1.0 + pd.scale[1] * (rel_h ** pd.exponent[1]))
+
     yield_f, yield_w = config.consume_yield
+    target_consume_f = (2.5 * dec_f) / yield_f
+    target_consume_w = (2.5 * dec_w) / yield_w
 
-    target_consume_f = (2.0 * dec_f) / yield_f
-    target_consume_w = (2.0 * dec_w) / yield_w
-
-    if agent.n < 35.0 and agent.inv["f"] > 0.1:
-        consume_type = 2  # Food
+    if agent.n < 38.0 and agent.inv["f"] > 0.05:
+        consume_type = 2  # Food -> Nutrition
         consume_fraction = min(1.0, float(target_consume_f / max(agent.inv["f"], 1e-5)))
-    elif agent.h < 35.0 and agent.inv["w"] > 0.1:
-        consume_type = 3  # Wood
+    elif agent.h < 35.0 and agent.inv["w"] > 0.05:
+        consume_type = 3  # Wood -> Housing
         consume_fraction = min(1.0, float(target_consume_w / max(agent.inv["w"], 1e-5)))
 
-    # Action Selection Logic
+    # 2. Action Selection Logic with Homeostatic Balancing & Capacity Checks
     action_idx = 11  # Default Stand
+    current_weight = calculate_inventory_weight(agent.inv, config.weights)
+    can_gather_food = (current_weight + config.weights.get("Food", 0.5)) <= (config.max_storage * 0.95)
+    can_gather_wood = (current_weight + config.weights.get("Wood", 1.0)) <= (config.max_storage * 0.95)
+    can_gather_gold = (current_weight + config.weights.get("Gold", 2.0)) <= config.max_storage
 
-    if agent.n < 30.0:  # Priority 1: Hunger
-        if cur_food > 0.3:
+    if agent.n < 32.0:  # Priority 1: Food/Hunger
+        if cur_food > 0.35 and can_gather_food:
             action_idx = 5  # Gather Food
         else:
             sub_grid = env_grid[r_min:r_max, c_min:c_max, 0]
@@ -85,8 +96,8 @@ def get_expert_decisions(
             target_c = c_min + max_pos[1]
             action_idx = get_movement_towards(pos_r, pos_c, target_r, target_c)
 
-    elif agent.h < 30.0:  # Priority 2: Cold
-        if cur_wood > 0.3:
+    elif agent.h < 28.0:  # Priority 2: Wood/Cold
+        if cur_wood > 0.35 and can_gather_wood:
             action_idx = 6  # Gather Wood
         else:
             sub_grid = env_grid[r_min:r_max, c_min:c_max, 1]
@@ -95,15 +106,21 @@ def get_expert_decisions(
             target_c = c_min + max_pos[1]
             action_idx = get_movement_towards(pos_r, pos_c, target_r, target_c)
 
-    else:  # Priority 3: Accumulate Gold
-        if cur_gold > 0.3:
+    elif agent.inv["f"] < 3.0 and cur_food > 0.4 and can_gather_food:  # Priority 3: Food Buffer
+        action_idx = 5
+    elif agent.inv["w"] < 3.0 and cur_wood > 0.4 and can_gather_wood:  # Priority 4: Wood Buffer
+        action_idx = 6
+    else:  # Priority 5: Gold accumulation (permanent wealth)
+        if cur_gold > 0.3 and can_gather_gold:
             action_idx = 7  # Gather Gold
-        else:
+        elif can_gather_gold:
             sub_grid = env_grid[r_min:r_max, c_min:c_max, 2]
             max_pos = np.unravel_index(np.argmax(sub_grid), sub_grid.shape)
             target_r = r_min + max_pos[0]
             target_c = c_min + max_pos[1]
             action_idx = get_movement_towards(pos_r, pos_c, target_r, target_c)
+        else:
+            action_idx = 11  # Capacity full -> Stand / conserve energy
 
     return {
         "action_idx": action_idx,

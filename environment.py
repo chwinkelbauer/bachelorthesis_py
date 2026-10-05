@@ -89,11 +89,12 @@ def get_agent_occupancy_map(agents: List[Any], grid_shape: Tuple[int, int]) -> n
 
 def calculate_inventory_weight(inv: Dict[str, float], weights: Dict[str, float]) -> float:
     """
-    Calculates total weight of resources currently held in an inventory.
+    Calculates total weight of resources currently held in an inventory:
+    Default unit weights: Food=0.5, Wood=1.0, Gold=2.0.
     """
-    wf = weights.get("Food", 1.0)
-    ww = weights.get("Wood", 2.0)
-    wg = weights.get("Gold", 0.1)
+    wf = weights.get("Food", 0.5)
+    ww = weights.get("Wood", 1.0)
+    wg = weights.get("Gold", 2.0)
 
     return (inv.get("f", 0.0) * wf) + (inv.get("w", 0.0) * ww) + (inv.get("g", 0.0) * wg)
 

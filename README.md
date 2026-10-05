@@ -30,6 +30,20 @@ py/
 2. **Vectorized Spatial Operations**: NumPy matrix operations replace double R loops for vision extraction, spatial map decay computations, and observation building.
 3. **Modular Encoder Abstraction for GNNs**: `MultiHeadGlobalBrain` features an extensible `encoder_type` parameter (`mlp` or `gnn`). The `GNNEncoder` class is pre-configured to plug in Graph Neural Networks (e.g. PyTorch Geometric `GCNConv` / `GATConv`) to model spatial agent topology and communication graphs.
 
+## ⚖️ Economic Anti-Hoarding & Spoilage Mechanics
+
+1. **Differentiated Inventory Spoilage**:
+   - **Food ($f$)**: High perishability ($\approx 2.5\%$ per step) with super-linear accelerated decay on stockpiles ($>3.0$ units).
+   - **Wood ($w$)**: Moderate weatherability ($\approx 0.5\%$ per step) with super-linear holding decay.
+   - **Gold ($g$)**: **0.0% decay** (immutable and permanent store of value).
+2. **Realistic Weight Limits & Overburden Penalty**:
+   - Total inventory capacity limit: $\sigma_{\max} = 15.0$ weight units.
+   - Unit weights: $\text{Food} = 0.5$, $\text{Wood} = 1.0$, $\text{Gold} = 2.0$ (dense precious metal).
+   - **Overburden Cost ($> 70\%$ capacity)**:
+     - **Metabolic Exhaustion**: Heavy carrying load increases passive $N$ and $H$ drain by up to $+30\%$.
+     - **Gathering Penalty**: Overfilled inventory lowers gathering efficacy by up to $-35\%$.
+     - **Disutility**: Continuous negative reward penalty disincentivizes carrying useless dead weight.
+
 ---
 
 ## 🚀 Quickstart & Usage
@@ -46,20 +60,31 @@ Run 200 random map Monte Carlo analysis of resource yields, passive lifespans, a
 python main.py --check
 ```
 
-### 3. Full Pipeline Execution (Expert Data -> Pre-Training -> Curriculum -> RL)
-Execute the end-to-end curriculum and MAPPO training pipeline:
+### 3. Using the Pre-Trained Neural Network
+
+You can use the pre-trained neural network in **two ways**:
+
+#### Option A: Chained Pipeline Command (In-Memory Transfer)
+Run pre-training, curriculum learning, and RL training in a single chained command. The pre-trained weights will be passed directly in memory to the RL training stage:
+
 ```bash
-# Step 1: Collect expert dataset (25 episodes)
+# Run Pre-Training + Curriculum + RL Training in one go
 python main.py --collect --episodes 25
+python main.py --pretrain --epochs 10 --curriculum --train --total-steps 20000
+```
 
-# Step 2: Run supervised pre-training on expert dataset (10 epochs)
-python main.py --pretrain --epochs 10
+#### Option B: Save & Load Weight Checkpoints (`.pt` files)
+Save pre-trained weights to a file and load them into subsequent training sessions or evaluations:
 
-# Step 3: Run curriculum learning (scaling drain rates)
-python main.py --curriculum
+```bash
+# 1. Pre-train neural net and save weights to 'pretrained_brain.pt'
+python main.py --pretrain --epochs 10 --save-brain pretrained_brain.pt
 
-# Step 4: Run full MAPPO RL experiment (20,000 steps)
-python main.py --train --total-steps 20000
+# 2. Run RL training using the saved pre-trained brain weights
+python main.py --load-brain pretrained_brain.pt --train --total-steps 20000
+
+# 3. Run curriculum training using loaded weights and save updated weights
+python main.py --load-brain pretrained_brain.pt --curriculum --save-brain curriculum_brain.pt
 ```
 
 ---
@@ -79,6 +104,8 @@ To swap the standard MLP backbone for a Graph Neural Network:
 
 - **Logarithmic Utility Function**:
   $$U_i = w_n \ln(\max(0, N_i) + 1) + w_h \ln(\max(0, H_i) + 1) + w_g \ln(\max(0, G_i) + 1)$$
+- **Super-Linear Spoilage Loss**:
+  $$\text{Spoil}_f = \text{rate}_f \cdot f \cdot \left(1 + \left(\frac{\max(0, f - \theta_f)}{\theta_f}\right)^{\beta_f}\right)$$
 - **Resource Map Hub Decay**:
   $$P_{\text{resource}}(r, c) = \max\left(\text{min\_eff}, \exp\left(-\gamma \cdot \min_{h \in \text{hubs}} d((r,c), h)\right)\right)$$
 - **Observation Dimension**:

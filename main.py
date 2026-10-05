@@ -90,11 +90,13 @@ def main():
     parser.add_argument("--collect", action="store_true", help="Collect expert dataset")
     parser.add_argument("--episodes", type=int, default=25, help="Number of expert collection episodes")
     parser.add_argument("--pretrain", action="store_true", help="Run supervised pre-training")
-    parser.add_argument("--epochs", type=int, default=10, help="Pre-training epochs")
+    parser.add_argument("--epochs", "-epochs", "-e", type=int, default=10, help="Pre-training epochs")
     parser.add_argument("--curriculum", action="store_true", help="Run curriculum learning")
     parser.add_argument("--train", action="store_true", help="Run full MAPPO training experiment")
-    parser.add_argument("--total-steps", type=int, default=20000, help="Total steps for RL experiment")
+    parser.add_argument("--total-steps", "-total-steps", "-s", type=int, default=20000, help="Total steps for RL experiment")
     parser.add_argument("--encoder", type=str, default="mlp", choices=["mlp", "gnn"], help="Encoder architecture (mlp or gnn)")
+    parser.add_argument("--save-brain", type=str, default=None, help="File path to save the trained global brain weights (e.g. pretrained_brain.pt)")
+    parser.add_argument("--load-brain", type=str, default=None, help="File path to load pre-trained global brain weights (e.g. pretrained_brain.pt)")
 
     args = parser.parse_args()
 
@@ -110,14 +112,32 @@ def main():
         run_expert_collection(num_episodes=args.episodes, config=config)
 
     brain = None
-    if args.pretrain:
+
+    # Load brain weights from file if specified
+    if args.load_brain is not None:
+        load_path = args.load_brain
         brain = MultiHeadGlobalBrain(input_dim=config.input_dim, hidden_dim=64, encoder_type=args.encoder)
+        brain.load_state_dict(torch.load(load_path))
+        print(f"-> Successfully loaded pre-trained neural network weights from '{load_path}'!")
+
+    if args.pretrain:
+        if brain is None:
+            brain = MultiHeadGlobalBrain(input_dim=config.input_dim, hidden_dim=64, encoder_type=args.encoder)
         brain = run_supervised_pretraining(brain, dataset_path="expert_dataset.pkl", epochs=args.epochs)
+        if args.save_brain is None and not args.curriculum and not args.train:
+            args.save_brain = "pretrained_brain.pt"
 
     if args.curriculum:
         if brain is None:
             brain = MultiHeadGlobalBrain(input_dim=config.input_dim, hidden_dim=64, encoder_type=args.encoder)
         brain = run_curriculum_training(brain, config=config)
+        if args.save_brain is None and not args.train:
+            args.save_brain = "curriculum_brain.pt"
+
+    # Auto-save weights if save path is set or defaulted
+    if args.save_brain and brain is not None:
+        torch.save(brain.state_dict(), args.save_brain)
+        print(f"-> Saved global brain weights to '{args.save_brain}'")
 
     if args.train:
         run_training_experiment(total_steps=args.total_steps, x_steps=2500, config=config, pre_trained_brain=brain)

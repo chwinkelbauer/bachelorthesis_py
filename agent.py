@@ -143,9 +143,11 @@ def execute_gather(
       8: Drop Food by drop_fraction
       9: Drop Wood by drop_fraction
      10: Drop Gold by drop_fraction
+    Applies Overburden efficiency penalty when inventory load is high.
     """
     r, c = agent.pos
     current_weight = calculate_inventory_weight(agent.inv, config.weights)
+    pd = getattr(config, 'progressive_drain', None)
 
     # Gathering Actions (5-7)
     if 5 <= action_idx <= 7:
@@ -153,7 +155,14 @@ def execute_gather(
         tile_prob = environment_grid[r, c, res_idx]
         eff_factor = agent.eff[res_idx]
 
-        harvest_amt = float(tile_prob * eff_factor)
+        # Overburden Gathering Efficiency Penalty
+        load_ratio = current_weight / max(1e-5, agent.max_storage)
+        eff_penalty_mult = 1.0
+        if pd and pd.enabled and load_ratio > pd.overburden_threshold:
+            excess_load = (load_ratio - pd.overburden_threshold) / (1.0 - pd.overburden_threshold + 1e-5)
+            eff_penalty_mult = max(0.15, 1.0 - pd.overburden_gathering_penalty * (excess_load ** 2))
+
+        harvest_amt = float(tile_prob * eff_factor * eff_penalty_mult)
 
         res_key = ["f", "w", "g"][res_idx]
         res_weight_unit = config.weights.get(["Food", "Wood", "Gold"][res_idx], 1.0)
@@ -185,31 +194,84 @@ def execute_consumption(
     config: EnvConfig = DEFAULT_CONFIG
 ) -> Agent:
     """
-    Executes physiological consumption of inventory goods and updates survival indicators:
-    consume_type:
-      1: Consume Nothing
-      2: Consume Food (restores Nutrition N)
-      3: Consume Wood (restores Housing H)
+    Executes physiological consumption of inventory goods and updates survival indicators.
+    Includes:
+      1. Progressive Metabolic Upkeep (Super-linear scaling with high needs).
+      2. Differentiated Spoilage (Food=2.5%, Wood=0.5%, Gold=0.0% with super-linear stockpile penalty).
+      3. Overburden Metabolic Carrying Cost (Physical exhaustion when carrying heavy inventory).
     """
-    # Passive drain per step
-    agent.n = max(0.0, agent.n - config.decrease[0])
-    agent.h = max(0.0, agent.h - config.decrease[1])
+    # 1. Progressive Metabolic Upkeep & Overburden Drain
+    base_dec_n, base_dec_h = config.decrease
+    pd = getattr(config, 'progressive_drain', None)
+    current_weight = calculate_inventory_weight(agent.inv, config.weights)
 
+    if pd and pd.enabled:
+        # Super-linear drain scaling when needs are high (e.g. quadratic)
+        rel_n = max(0.0, agent.n / max(1e-5, pd.ref_level[0]))
+        rel_h = max(0.0, agent.h / max(1e-5, pd.ref_level[1]))
+
+        drain_factor_n = 1.0 + pd.scale[0] * (rel_n ** pd.exponent[0])
+        drain_factor_h = 1.0 + pd.scale[1] * (rel_h ** pd.exponent[1])
+
+        # Overburden Physical Carrying Drain (carrying heavy loads increases metabolic burn)
+        load_ratio = current_weight / max(1e-5, agent.max_storage)
+        if load_ratio > pd.overburden_threshold:
+            excess_load = (load_ratio - pd.overburden_threshold) / (1.0 - pd.overburden_threshold + 1e-5)
+            overburden_burn = 1.0 + pd.overburden_metabolic_penalty * (excess_load ** 2)
+            drain_factor_n *= overburden_burn
+            drain_factor_h *= overburden_burn
+
+        dec_n = base_dec_n * drain_factor_n
+        dec_h = base_dec_h * drain_factor_h
+
+        # 2. Differentiated Inventory Spoilage (Food=2.5%, Wood=0.5%, Gold=0.0%)
+        # Base rate + accelerated super-linear loss on large stockpiles
+        spoil_rates = pd.inventory_spoilage_rate
+        spoil_exps = pd.inventory_spoilage_exp
+        spoil_threshs = pd.spoilage_threshold
+
+        # Food Spoilage
+        if agent.inv["f"] > 0.0 and spoil_rates[0] > 0.0:
+            qty_f = agent.inv["f"]
+            stockpile_factor = 1.0 + (max(0.0, qty_f - spoil_threshs[0]) / max(1e-5, spoil_threshs[0])) ** spoil_exps[0]
+            spoil_f = spoil_rates[0] * qty_f * stockpile_factor
+            agent.inv["f"] = max(0.0, qty_f - spoil_f)
+
+        # Wood Spoilage
+        if agent.inv["w"] > 0.0 and spoil_rates[1] > 0.0:
+            qty_w = agent.inv["w"]
+            stockpile_factor = 1.0 + (max(0.0, qty_w - spoil_threshs[1]) / max(1e-5, spoil_threshs[1])) ** spoil_exps[1]
+            spoil_w = spoil_rates[1] * qty_w * stockpile_factor
+            agent.inv["w"] = max(0.0, qty_w - spoil_w)
+
+        # Gold Spoilage: 0.0% (Gold is immutable / permanent store of value)
+        if agent.inv["g"] > 0.0 and spoil_rates[2] > 0.0:
+            spoil_g = spoil_rates[2] * agent.inv["g"]
+            agent.inv["g"] = max(0.0, agent.inv["g"] - spoil_g)
+    else:
+        dec_n = base_dec_n
+        dec_h = base_dec_h
+
+    # Apply passive metabolic drain
+    agent.n = max(0.0, agent.n - dec_n)
+    agent.h = max(0.0, agent.h - dec_h)
+
+    # 3. Consumption Execution
     yield_f, yield_w = config.consume_yield
 
-    if consume_type == 2:  # Food
+    if consume_type == 2:  # Food -> Nutrition
         consumed_amt = agent.inv["f"] * float(consume_fraction)
         if consumed_amt > 0.0 and agent.inv["f"] >= consumed_amt:
             agent.inv["f"] = max(0.0, agent.inv["f"] - consumed_amt)
             agent.n += consumed_amt * yield_f
 
-    elif consume_type == 3:  # Wood
+    elif consume_type == 3:  # Wood -> Housing
         consumed_amt = agent.inv["w"] * float(consume_fraction)
         if consumed_amt > 0.0 and agent.inv["w"] >= consumed_amt:
             agent.inv["w"] = max(0.0, agent.inv["w"] - consumed_amt)
             agent.h += consumed_amt * yield_w
 
-    # Update Hunger Steps Counter
+    # 4. Update Hunger and Cold Counters
     if agent.n > 1.0:
         agent.hunger_steps = 0  # Fully satisfied -> Reset
     elif agent.n > 0.0:
@@ -218,7 +280,6 @@ def execute_consumption(
         agent.n = 0.0
         agent.hunger_steps += 1  # Actively starving -> Increment
 
-    # Update Cold Steps Counter
     if agent.h > 1.0:
         agent.cold_steps = 0  # Fully warm -> Reset
     elif agent.h > 0.0:
@@ -227,7 +288,7 @@ def execute_consumption(
         agent.h = 0.0
         agent.cold_steps += 1  # Actively freezing -> Increment
 
-    # Check Death Conditions
+    # 4. Check Death Conditions
     if agent.hunger_steps >= config.dead_time[0] or agent.cold_steps >= config.dead_time[1]:
         agent.alive = False
 
