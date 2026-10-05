@@ -108,6 +108,43 @@ class MultiHeadGlobalBrain(nn.Module):
             "v_pred": v_pred
         }
 
+    def evaluate_actions_batch(
+        self,
+        states: torch.Tensor,
+        actions: torch.Tensor,
+        consume_types: torch.Tensor,
+        consume_amts: Optional[torch.Tensor] = None,
+        drop_amts: Optional[torch.Tensor] = None
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Evaluates batch state-action pairs for PPO mini-batch updates.
+        Computes new log-probabilities, policy entropies, continuous control outputs, and critic state-values.
+        """
+        out = self.forward(states)
+
+        # Discrete Action Policy Distribution
+        dist_act = torch.distributions.Categorical(logits=out["logits_action"])
+        # If actions are 1-indexed, convert to 0-indexed
+        act_idx = actions if actions.max() < 11 else (actions - 1)
+        log_prob_act = dist_act.log_prob(act_idx)
+        entropy_act = dist_act.entropy()
+
+        # Discrete Consume Type Policy Distribution
+        dist_ct = torch.distributions.Categorical(logits=out["logits_consume_type"])
+        ct_idx = consume_types if consume_types.max() < 3 else (consume_types - 1)
+        log_prob_ct = dist_ct.log_prob(ct_idx)
+        entropy_ct = dist_ct.entropy()
+
+        return {
+            "log_prob_act": log_prob_act,
+            "entropy_act": entropy_act,
+            "log_prob_ct": log_prob_ct,
+            "entropy_ct": entropy_ct,
+            "consume_amt": out["consume_amt"].squeeze(-1),
+            "drop_amt": out["drop_amt"].squeeze(-1),
+            "v_pred": out["v_pred"].squeeze(-1)
+        }
+
     def predict_action(self, state_vec: torch.Tensor) -> Dict[str, Any]:
         """
         Inference helper to derive argmax discrete decisions and continuous fractions.

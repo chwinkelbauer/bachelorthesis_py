@@ -80,11 +80,11 @@ Save pre-trained weights to a file and load them into subsequent training sessio
 # 1. Pre-train neural net and save weights to 'pretrained_brain.pt'
 python main.py --pretrain --epochs 10 --save-brain pretrained_brain.pt
 
-# 2. Run RL training using the saved pre-trained brain weights
-python main.py --load-brain pretrained_brain.pt --train --total-steps 20000
-
-# 3. Run curriculum training using loaded weights and save updated weights
+# 2. Run curriculum training on pre-trained weights and save result
 python main.py --load-brain pretrained_brain.pt --curriculum --save-brain curriculum_brain.pt
+
+# 3. Run RL training using the curriculum-trained brain weights
+python main.py --load-brain curriculum_brain.pt --train --total-steps 20000
 ```
 
 ---
