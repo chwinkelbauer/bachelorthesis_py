@@ -1,9 +1,11 @@
 """
 Training module featuring Supervised Pre-Training, Curriculum Learning, and MAPPO Reinforcement Learning.
-Ported and modernized from R simulation_loop.R, pre_train.R, and curriculum.R to PyTorch autograd.
+Ported and modernized from simulation_loop.R, pre_train.R, and curriculum.R to PyTorch autograd.
+Cleaned: Behavioral Cloning anchors removed, curriculum multiplier fixed to 100%.
 """
 
 import copy
+from networkx import config
 import numpy as np
 import torch
 import torch.nn as nn
@@ -71,26 +73,24 @@ def run_supervised_pretraining(
 
 class MAPPORolloutBuffer:
     """
-    Trajectory Rollout Buffer for multi-agent trajectory collection and Generalized Advantage Estimation (GAE).
+    Trajectory Rollout Buffer with agent-separated GAE computation to preserve strict temporal causality.
     """
-    def __init__(self, capacity: int = 1000):
+    def __init__(self, num_agents: int, capacity: int = 1000):
+        self.num_agents = num_agents
         self.capacity = capacity
         self.reset()
 
     def reset(self):
-        self.states: List[np.ndarray] = []
-        self.actions: List[int] = []
-        self.log_prob_acts: List[float] = []
-        self.consume_types: List[int] = []
-        self.log_prob_cts: List[float] = []
-        self.consume_amts: List[float] = []
-        self.drop_amts: List[float] = []
-        self.rewards: List[float] = []
-        self.dones: List[bool] = []
-        self.values: List[float] = []
+        # Separierte Puffer pro Agent, um Cross-Agent Value Bootstrapping zu verhindern
+        self.agent_buffers = {i: {
+            'states': [], 'actions': [], 'log_prob_acts': [],
+            'consume_types': [], 'log_prob_cts': [], 'consume_amts': [],
+            'drop_amts': [], 'rewards': [], 'dones': [], 'values': []
+        } for i in range(self.num_agents)}
 
     def store(
         self,
+        agent_idx: int,
         state: np.ndarray,
         action: int,
         log_prob_act: float,
@@ -102,62 +102,89 @@ class MAPPORolloutBuffer:
         done: bool,
         value: float
     ):
-        self.states.append(state)
-        self.actions.append(action)
-        self.log_prob_acts.append(log_prob_act)
-        self.consume_types.append(consume_type)
-        self.log_prob_cts.append(log_prob_ct)
-        self.consume_amts.append(consume_amt)
-        self.drop_amts.append(drop_amt)
-        self.rewards.append(reward)
-        self.dones.append(done)
-        self.values.append(value)
+        buf = self.agent_buffers[agent_idx]
+        buf['states'].append(state)
+        buf['actions'].append(action)
+        buf['log_prob_acts'].append(log_prob_act)
+        buf['consume_types'].append(consume_type)
+        buf['log_prob_cts'].append(log_prob_ct)
+        buf['consume_amts'].append(consume_amt)
+        buf['drop_amts'].append(drop_amt)
+        buf['rewards'].append(reward)
+        buf['dones'].append(done)
+        buf['values'].append(value)
 
     def compute_returns_and_advantages(
         self,
-        last_value: float = 0.0,
+        last_values: Optional[Dict[int, float]] = None,
         gamma: float = 0.99,
         gae_lambda: float = 0.95
     ) -> Tuple[torch.Tensor, ...]:
-        n = len(self.rewards)
-        advantages = np.zeros(n, dtype=np.float32)
-        returns = np.zeros(n, dtype=np.float32)
-        last_gae = 0.0
+        if last_values is None:
+            last_values = {}
 
-        for t in reversed(range(n)):
-            next_val = last_value if t == n - 1 else self.values[t + 1]
-            non_terminal = 0.0 if self.dones[t] else 1.0
-            delta = self.rewards[t] + gamma * next_val * non_terminal - self.values[t]
-            last_gae = delta + gamma * gae_lambda * non_terminal * last_gae
-            advantages[t] = last_gae
-            returns[t] = advantages[t] + self.values[t]
+        all_states, all_actions, all_lp_acts, all_ctypes, all_lp_cts, all_camts, all_damts, all_advs, all_rets = [], [], [], [], [], [], [], [], []
 
-        # Normalize advantages over the batch for stable policy gradient steps
-        adv_mean = np.mean(advantages)
-        adv_std = np.std(advantages) + 1e-8
-        norm_advantages = (advantages - adv_mean) / adv_std
+        for agent_idx, buf in self.agent_buffers.items():
+            n = len(buf['rewards'])
+            if n == 0:
+                continue
+            
+            rewards = np.array(buf['rewards'], dtype=np.float32)
+            values = np.array(buf['values'], dtype=np.float32)
+            dones = np.array(buf['dones'], dtype=bool)
+            
+            advantages = np.zeros(n, dtype=np.float32)
+            returns = np.zeros(n, dtype=np.float32)
+            last_gae = 0.0
+            last_val = last_values.get(agent_idx, 0.0)
+
+            # GAE Berechnung strikt innerhalb der Zeitschritte desselben Agenten
+            for t in reversed(range(n)):
+                next_val = last_val if t == n - 1 else values[t + 1]
+                non_terminal = 0.0 if dones[t] else 1.0
+                delta = rewards[t] + gamma * next_val * non_terminal - values[t]
+                last_gae = delta + gamma * gae_lambda * non_terminal * last_gae
+                advantages[t] = last_gae
+                returns[t] = advantages[t] + values[t]
+
+            all_states.extend(buf['states'])
+            all_actions.extend(buf['actions'])
+            all_lp_acts.extend(buf['log_prob_acts'])
+            all_ctypes.extend(buf['consume_types'])
+            all_lp_cts.extend(buf['log_prob_cts'])
+            all_camts.extend(buf['consume_amts'])
+            all_damts.extend(buf['drop_amts'])
+            all_advs.extend(advantages)
+            all_rets.extend(returns)
+
+        if len(all_advs) == 0:
+            return tuple(torch.tensor([], dtype=torch.float32) for _ in range(9))
+
+        advs_arr = np.array(all_advs, dtype=np.float32)
+        adv_mean = np.mean(advs_arr)
+        adv_std = np.std(advs_arr) + 1e-8
+        norm_advantages = (advs_arr - adv_mean) / adv_std
 
         return (
-            torch.tensor(np.array(self.states), dtype=torch.float32),
-            torch.tensor(np.array(self.actions), dtype=torch.long),
-            torch.tensor(np.array(self.log_prob_acts), dtype=torch.float32),
-            torch.tensor(np.array(self.consume_types), dtype=torch.long),
-            torch.tensor(np.array(self.log_prob_cts), dtype=torch.float32),
-            torch.tensor(np.array(self.consume_amts), dtype=torch.float32),
-            torch.tensor(np.array(self.drop_amts), dtype=torch.float32),
+            torch.tensor(np.array(all_states), dtype=torch.float32),
+            torch.tensor(np.array(all_actions), dtype=torch.long),
+            torch.tensor(np.array(all_lp_acts), dtype=torch.float32),
+            torch.tensor(np.array(all_ctypes), dtype=torch.long),
+            torch.tensor(np.array(all_lp_cts), dtype=torch.float32),
+            torch.tensor(np.array(all_camts), dtype=torch.float32),
+            torch.tensor(np.array(all_damts), dtype=torch.float32),
             torch.tensor(norm_advantages, dtype=torch.float32),
-            torch.tensor(returns, dtype=torch.float32)
+            torch.tensor(np.array(all_rets), dtype=torch.float32)
         )
 
 
 def update_mappo_policy(
-    global_brain: MultiHeadGlobalBrain,
+global_brain: MultiHeadGlobalBrain,
     optimizer: torch.optim.Optimizer,
     buffer: MAPPORolloutBuffer,
-    last_value: float = 0.0,
-    config: EnvConfig = DEFAULT_CONFIG,
-    ref_brain: Optional[MultiHeadGlobalBrain] = None,
-    bc_coeff: float = 0.0
+    last_values: Optional[Dict[int, float]] = None,
+    config: EnvConfig = DEFAULT_CONFIG
 ) -> Dict[str, float]:
     """
     Performs PPO ratio-clipped mini-batch policy gradient and value function updates.
@@ -173,7 +200,7 @@ def update_mappo_policy(
     max_grad_norm = mp.max_grad_norm if mp else 0.50
 
     states, actions, old_lp_act, ctypes, old_lp_ct, camts, damts, advantages, returns = (
-        buffer.compute_returns_and_advantages(last_value, gamma=gamma, gae_lambda=gae_lambda)
+        buffer.compute_returns_and_advantages(last_values=last_values, gamma=gamma, gae_lambda=gae_lambda)
     )
 
     num_samples = len(states)
@@ -223,26 +250,7 @@ def update_mappo_policy(
             loss_camt = 0.5 * F.mse_loss(eval_out["consume_amt"], b_camts)
             loss_damt = 0.5 * F.mse_loss(eval_out["drop_amt"], b_damts)
 
-            # Behavioral Cloning (BC) KL Regularization
-            # KL[pi_current || pi_ref] — keeps the policy close to the pre-trained expert
-            loss_bc = torch.tensor(0.0)
-            if ref_brain is not None and bc_coeff > 0.0:
-                with torch.no_grad():
-                    ref_out = ref_brain(b_states)
-                cur_out = global_brain(b_states)
-                kl_act = F.kl_div(
-                    F.log_softmax(cur_out["logits_action"], dim=-1),
-                    F.softmax(ref_out["logits_action"], dim=-1),
-                    reduction="batchmean"
-                )
-                kl_ct = F.kl_div(
-                    F.log_softmax(cur_out["logits_consume_type"], dim=-1),
-                    F.softmax(ref_out["logits_consume_type"], dim=-1),
-                    reduction="batchmean"
-                )
-                loss_bc = bc_coeff * (kl_act + kl_ct)
-
-            total_loss = loss_act + loss_ct + loss_val + loss_entropy + loss_camt + loss_damt + loss_bc
+            total_loss = loss_act + loss_ct + loss_val + loss_entropy + loss_camt + loss_damt
 
             optimizer.zero_grad()
             total_loss.backward()
@@ -272,7 +280,6 @@ def run_simulation_step(
     n_rows, n_cols, _ = environment_grid.shape
     barter_decisions = [False] * len(agents)
 
-    # Check if any agents are alive
     if not any(a.alive for a in agents):
         return {"agents": agents, "global_brain": global_brain, "reset_needed": True}
 
@@ -291,7 +298,6 @@ def run_simulation_step(
         state_vec = extract_agent_observation(agent, environment_grid, config)
         state_tensor = torch.tensor(state_vec, dtype=torch.float32).unsqueeze(0)
 
-        # Forward pass through neural brain
         with torch.no_grad():
             out = global_brain(state_tensor)
 
@@ -326,7 +332,6 @@ def run_simulation_step(
 
         barter_decisions[i] = barter_flag
 
-        # Sequential Environment Execution
         agent = execute_move(agent, action_idx, n_rows, n_cols)
         agent = execute_gather(agent, action_idx, environment_grid, drop_fraction, config)
         agent = execute_consumption(agent, consume_type, consume_fraction, config)
@@ -334,16 +339,13 @@ def run_simulation_step(
         u_new = calculate_utility(agent, config)
         delta_u = u_new - u_old
 
-        # Reward Shaping: Delta Utility + Survival Bonus - Danger Penalty - Overburden Penalty - Death Penalty
         reward = delta_u + survival_bonus
 
-        # Smooth danger penalty when approaching starvation/cold
         if agent.n < danger_thresh[0]:
             reward -= danger_scale * (danger_thresh[0] - agent.n)
         if agent.h < danger_thresh[1]:
             reward -= danger_scale * (danger_thresh[1] - agent.h)
 
-        # Overburden penalty
         current_weight = calculate_inventory_weight(agent.inv, config.weights)
         load_ratio = current_weight / max(1e-5, agent.max_storage)
         if pd and pd.enabled and load_ratio > pd.overburden_threshold:
@@ -356,9 +358,9 @@ def run_simulation_step(
 
         done = not agent.alive
 
-        # Buffer transition for MAPPO GAE batch update
         if buffer is not None:
             buffer.store(
+                agent_idx=i,  # Übergabe des Agenten-Index zur Kausalitätstrennung
                 state=state_vec,
                 action=action_idx,
                 log_prob_act=log_prob_act,
@@ -371,7 +373,6 @@ def run_simulation_step(
                 value=v_pred
             )
         elif optimizer is not None:
-            # Fallback 1-step update if no rollout buffer was supplied
             state_tensor = torch.tensor(state_vec, dtype=torch.float32).unsqueeze(0)
             train_out = global_brain(state_tensor)
             adv = float(reward) - train_out["v_pred"].squeeze(0)
@@ -388,7 +389,6 @@ def run_simulation_step(
 
         agents[i] = agent
 
-    # Execute Barter Subloop synchronously after all decisions
     agents = execute_barter_subloop(agents, barter_decisions, config)
 
     return {"agents": agents, "global_brain": global_brain, "reset_needed": False}
@@ -400,13 +400,12 @@ def run_curriculum_training(
     lr: float = 0.0003
 ) -> MultiHeadGlobalBrain:
     """
-    Executes Curriculum Learning with progressive difficulty scaling on resource drain,
-    buffered trajectory collection, and MAPPO PPO updates.
+    Executes Curriculum Learning with progressive difficulty scaling on resource drain up to 100%.
     """
     steps_each = config.pre_training.steps_each
     prog_step = config.pre_training.progression
 
-    multipliers = np.arange(0.0, 1.0, prog_step)
+    multipliers = np.linspace(0.0, 1.0, int(1.0 / prog_step) + 1)
     num_stages = len(multipliers)
     total_steps = num_stages * steps_each
 
@@ -430,7 +429,9 @@ def run_curriculum_training(
     rollout_steps = mp.rollout_steps if mp else 64
     lr_use = mp.lr if mp else lr
     optimizer = torch.optim.Adam(global_brain.parameters(), lr=lr_use)
-    buffer = MAPPORolloutBuffer(capacity=rollout_steps * n_agents * 2)
+    
+    # Korrekte Initialisierung mit num_agents
+    buffer = MAPPORolloutBuffer(num_agents=n_agents, capacity=rollout_steps * n_agents * 2)
 
     dead_lifespans = []
 
@@ -457,15 +458,17 @@ def run_curriculum_training(
 
         sim_output = run_simulation_step(agents, env_grid, global_brain, current_config, buffer=buffer)
 
-        # Periodic MAPPO PPO mini-batch update
-        if step % rollout_steps == 0 and len(buffer.rewards) > 0:
-            last_val = 0.0
-            if any(a.alive for a in agents):
-                alive_agent = next(a for a in agents if a.alive)
-                s_vec = extract_agent_observation(alive_agent, env_grid, current_config)
-                with torch.no_grad():
-                    last_val = float(global_brain(torch.tensor(s_vec, dtype=torch.float32).unsqueeze(0))["v_pred"].squeeze().item())
-            update_mappo_policy(global_brain, optimizer, buffer, last_val, current_config)
+        # Überprüfung über den agenten-getrennten Buffer
+        if step % rollout_steps == 0 and sum(len(b['rewards']) for b in buffer.agent_buffers.values()) > 0:
+            last_values = {}
+            for idx, a in enumerate(agents):
+                if a.alive:
+                    s_vec = extract_agent_observation(a, env_grid, current_config)
+                    with torch.no_grad():
+                        last_values[idx] = float(global_brain(torch.tensor(s_vec, dtype=torch.float32).unsqueeze(0))["v_pred"].squeeze().item())
+                else:
+                    last_values[idx] = 0.0
+            update_mappo_policy(global_brain, optimizer, buffer, last_values, current_config)
 
         if sim_output["reset_needed"]:
             for a in agents:
@@ -495,15 +498,7 @@ def run_training_experiment(
     lr: float = 0.0003
 ) -> MultiHeadGlobalBrain:
     """
-    Runs main MAPPO multi-agent reinforcement learning experiment loop with GAE & PPO mini-batch updates.
-
-    Training is partitioned into fixed-length *epochs* of ``config.mappo.epoch_max`` steps each.
-    At every epoch boundary:
-      1. Any remaining buffer transitions are flushed with a MAPPO update so the network
-         learns from the entire epoch's experience before moving on.
-      2. A qualitative performance assessment is printed (GOOD / OK / POOR) based on
-         rolling mean utility and mean episode lifespan inside the epoch, giving clear
-         per-epoch credit-assignment feedback.
+    Runs main MAPPO multi-agent reinforcement learning experiment loop directly with pre-trained brain without BC anchors.
     """
     n_rows = config.grid.n_grid
     n_cols = config.grid.k_grid
@@ -519,17 +514,11 @@ def run_training_experiment(
     )
 
     if pre_trained_brain is not None:
-        print("-> Using pre-trained Global Brain for training experiment...")
+        print("-> Using pre-trained Global Brain for training experiment (Direct continuation)...")
         global_brain = pre_trained_brain
-        # Keep a frozen reference copy for Behavioral Cloning (BC) regularization
-        ref_brain = copy.deepcopy(pre_trained_brain)
-        ref_brain.eval()
-        for p in ref_brain.parameters():
-            p.requires_grad_(False)
     else:
         print("-> Initializing new random Global Brain...")
         global_brain = MultiHeadGlobalBrain(input_dim=config.input_dim, hidden_dim=64)
-        ref_brain = None
 
     agents = initialize_agents_isolated(n_agents, n_rows, n_cols, config)
 
@@ -537,32 +526,23 @@ def run_training_experiment(
     rollout_steps = mp.rollout_steps if mp else 64
     lr_use = mp.lr if mp else lr
     optimizer = torch.optim.Adam(global_brain.parameters(), lr=lr_use)
-    buffer = MAPPORolloutBuffer(capacity=rollout_steps * n_agents * 2)
+    
+    # Korrekte Initialisierung mit num_agents
+    buffer = MAPPORolloutBuffer(num_agents=n_agents, capacity=rollout_steps * n_agents * 2)
 
-    # --- Epoch bookkeeping ---
-    epoch_max   = mp.epoch_max if mp else 500        # Hard step cap per epoch
-    eval_window = mp.epoch_eval_window if mp else 50 # Rolling window for epoch assessment
+    epoch_max = mp.epoch_max if mp else 500
+    eval_window = mp.epoch_eval_window if mp else 50
 
-    # --- BC regularization setup ---
-    current_bc_coeff = mp.bc_coeff if mp else 0.30
-    bc_decay         = mp.bc_coeff_decay if mp else 0.80
-    bc_min           = mp.bc_coeff_min if mp else 0.005
-    if ref_brain is not None:
-        print(f"-> Behavioral Cloning regularization enabled (bc_coeff={current_bc_coeff:.3f}, decay={bc_decay}, floor={bc_min})")
-    else:
-        current_bc_coeff = 0.0
+    epoch = 1
+    epoch_step = 0
 
-    epoch      = 1
-    epoch_step = 0   # Steps elapsed within the current epoch
-
-    episode            = 1
+    episode = 1
     episode_start_step = 1
-    episode_lengths: List[int]   = []
+    episode_lengths: List[int] = []
     interval_lifespans: List[int] = []
 
-    # Rolling metrics collected within each epoch
     window_utilities: List[float] = []
-    window_lifespans: List[int]   = []
+    window_lifespans: List[int] = []
 
     print(f"-> Starting MAPPO RL Training with {total_steps} steps "
           f"(Rollout: {rollout_steps}, epoch_max: {epoch_max}, "
@@ -577,24 +557,23 @@ def run_training_experiment(
 
         sim_output = run_simulation_step(agents, env_grid, global_brain, config, buffer=buffer)
 
-        # --- Periodic MAPPO rollout update (every rollout_steps within the current epoch) ---
-        if epoch_step % rollout_steps == 0 and len(buffer.rewards) > 0:
-            last_val = 0.0
-            if any(a.alive for a in agents):
-                alive_agent = next(a for a in agents if a.alive)
-                s_vec = extract_agent_observation(alive_agent, env_grid, config)
-                with torch.no_grad():
-                    last_val = float(global_brain(torch.tensor(s_vec, dtype=torch.float32).unsqueeze(0))["v_pred"].squeeze().item())
-            update_mappo_policy(global_brain, optimizer, buffer, last_val, config,
-                                ref_brain=ref_brain, bc_coeff=current_bc_coeff)
+        # Rollout Update mit agenten-getrennten last_values
+        if epoch_step % rollout_steps == 0 and sum(len(b['rewards']) for b in buffer.agent_buffers.values()) > 0:
+            last_values = {}
+            for idx, a in enumerate(agents):
+                if a.alive:
+                    s_vec = extract_agent_observation(a, env_grid, config)
+                    with torch.no_grad():
+                        last_values[idx] = float(global_brain(torch.tensor(s_vec, dtype=torch.float32).unsqueeze(0))["v_pred"].squeeze().item())
+                else:
+                    last_values[idx] = 0.0
+            update_mappo_policy(global_brain, optimizer, buffer, last_values, config)
 
-        # --- Collect rolling metrics for epoch-end assessment ---
         current_utilities = [calculate_utility(a, config) for a in agents]
         window_utilities.append(float(np.mean(current_utilities)))
         if len(window_utilities) > eval_window:
             window_utilities.pop(0)
 
-        # --- Episode reset handling ---
         if sim_output["reset_needed"]:
             ep_length = step - episode_start_step + 1
             episode_lengths.append(ep_length)
@@ -612,27 +591,22 @@ def run_training_experiment(
             agents = sim_output["agents"]
             global_brain = sim_output["global_brain"]
 
-        # =====================================================================
-        # EPOCH BOUNDARY: fires every epoch_max steps
-        # =====================================================================
         if epoch_step >= epoch_max:
-            # 1. Flush any remaining buffer so network learns from the full epoch
-            if len(buffer.rewards) > 0:
-                last_val = 0.0
-                if any(a.alive for a in agents):
-                    alive_agent = next(a for a in agents if a.alive)
-                    s_vec = extract_agent_observation(alive_agent, env_grid, config)
-                    with torch.no_grad():
-                        last_val = float(global_brain(torch.tensor(s_vec, dtype=torch.float32).unsqueeze(0))["v_pred"].squeeze().item())
-                update_mappo_policy(global_brain, optimizer, buffer, last_val, config,
-                                    ref_brain=ref_brain, bc_coeff=current_bc_coeff)
+            if sum(len(b['rewards']) for b in buffer.agent_buffers.values()) > 0:
+                last_values = {}
+                for idx, a in enumerate(agents):
+                    if a.alive:
+                        s_vec = extract_agent_observation(a, env_grid, config)
+                        with torch.no_grad():
+                            last_values[idx] = float(global_brain(torch.tensor(s_vec, dtype=torch.float32).unsqueeze(0))["v_pred"].squeeze().item())
+                    else:
+                        last_values[idx] = 0.0
+                update_mappo_policy(global_brain, optimizer, buffer, last_values, config)
 
-            # 2. Epoch-end performance assessment
-            mean_utility  = float(np.mean(window_utilities)) if window_utilities else 0.0
+            mean_utility = float(np.mean(window_utilities)) if window_utilities else 0.0
             mean_lifespan = float(np.mean(window_lifespans)) if window_lifespans \
                             else float(np.mean([a.survival_steps for a in agents]))
-            alive_count   = sum(1 for a in agents if a.alive)
-            total_eps     = len(window_lifespans)
+            alive_count = sum(1 for a in agents if a.alive)
 
             if mean_utility >= 20.0 and mean_lifespan >= 150.0:
                 verdict = "GOOD  -- agents thriving, policy improving"
@@ -642,63 +616,44 @@ def run_training_experiment(
                 verdict = "POOR  -- agents collapsing, policy needs revision"
 
             epoch_start = step - epoch_max + 1
-            nat_eps = total_eps   # episodes that ended naturally within this epoch
             print("=" * 60)
             print(f"  EPOCH {epoch:03d} COMPLETE  (Steps {epoch_start} to {step})")
             print(f"  Verdict             : {verdict}")
             print(f"  Mean Utility        : {mean_utility:.2f}  (last {eval_window} steps)")
-            print(f"  Avg Episode Length  : {mean_lifespan:.1f} steps  ({nat_eps} natural endings)")
+            print(f"  Avg Episode Length  : {mean_lifespan:.1f} steps")
             print(f"  Living Agents       : {alive_count}/{n_agents}")
-            print(f"  BC Coeff            : {current_bc_coeff:.4f}")
             print("=" * 60)
 
-            # Decay BC coefficient at every epoch boundary (fades the pre-training anchor)
-            if ref_brain is not None:
-                current_bc_coeff = max(bc_min, current_bc_coeff * bc_decay)
-
-            # 3. Hard simulation reset at epoch boundary
-            #    Any still-alive agents are forcibly ended; their lifespan up to this point
-            #    is recorded so the metric is not lost, then a fresh cohort is spawned.
             surviving_steps = step - episode_start_step + 1
             if any(a.alive for a in agents):
-                # Episode was cut short by the epoch boundary — record the partial lifespan
                 episode_lengths.append(surviving_steps)
                 interval_lifespans.append(surviving_steps)
-                print(f"  --> Epoch boundary after {epoch_max} steps "
-                      f"({alive_count}/{n_agents} agents alive). "
-                      f"Current episode cut at step {surviving_steps} — starting fresh.")
                 episode += 1
-            else:
-                print(f"  --> Epoch boundary after {epoch_max} steps — no survivors. Starting fresh.")
 
             agents = initialize_agents_isolated(n_agents, n_rows, n_cols, config)
             episode_start_step = step + 1
 
-            # Reset epoch-local counters and rolling windows
-            epoch      += 1
-            epoch_step  = 0
+            epoch += 1
+            epoch_step = 0
             window_utilities.clear()
             window_lifespans.clear()
             interval_lifespans.clear()
 
-        # --- Standard interval report (runs only when NOT at an epoch boundary) ---
         elif step % x_steps == 0:
             avg_lifespan = float(np.mean(interval_lifespans)) if len(interval_lifespans) > 0 else 0.0
-            utilities    = [calculate_utility(a, config) for a in agents]
-            alive_count  = sum(1 for a in agents if a.alive)
+            utilities = [calculate_utility(a, config) for a in agents]
+            alive_count = sum(1 for a in agents if a.alive)
 
             print("----------------------------------------------------")
             print(f">>> INTERVAL REPORT (Steps {step - x_steps + 1} - {step}) <<<")
             print(f"    - Average Episode Lifespan: {avg_lifespan:.2f} steps")
-            print(f"    - Total Episodes in Interval: {len(interval_lifespans)}")
             print(f"    - Current Living Agents: {alive_count}/{n_agents}")
             print(f"    - Current Mean Utility: {np.mean(utilities):.2f}")
             print("----------------------------------------------------")
-
             interval_lifespans = []
 
         elif step % 100 == 0:
-            utilities   = [calculate_utility(a, config) for a in agents]
+            utilities = [calculate_utility(a, config) for a in agents]
             alive_count = sum(1 for a in agents if a.alive)
             print(f"Step {step:04d} | Epoch {epoch} ({epoch_step}/{epoch_max}) | "
                   f"Ep {episode} | Living: {alive_count}/{n_agents} | "

@@ -84,7 +84,7 @@ python main.py --pretrain --epochs 10 --save-brain pretrained_brain.pt
 python main.py --load-brain pretrained_brain.pt --curriculum --save-brain curriculum_brain.pt
 
 # 3. Run RL training using the curriculum-trained brain weights
-python main.py --load-brain curriculum_brain.pt --train --total-steps 20000
+python main.py --load-brain curriculum_brain.pt --train --total-steps 5000
 ```
 
 ---
