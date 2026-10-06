@@ -474,6 +474,15 @@ def run_curriculum_training(
             for a in agents:
                 dead_lifespans.append(a.survival_steps)
 
+            env_grid = create_resource_map(
+                n=n_rows, k=n_cols,
+                num_food=current_config.grid.n_food,
+                num_wood=current_config.grid.n_wood,
+                num_gold=current_config.grid.n_gold,
+                decay_rate=current_config.grid.decay_rate,
+                min_eff=current_config.grid.min_eff
+            )
+
             agents = initialize_agents_isolated(n_agents, n_rows, n_cols, current_config)
             continue
 
@@ -586,6 +595,15 @@ def run_training_experiment(
 
             episode += 1
             episode_start_step = step + 1
+
+            env_grid = create_resource_map(
+                n=n_rows, k=n_cols,
+                num_food=config.grid.n_food,
+                num_wood=config.grid.n_wood,
+                num_gold=config.grid.n_gold,
+                decay_rate=config.grid.decay_rate,
+                min_eff=config.grid.min_eff
+            )
             agents = initialize_agents_isolated(n_agents, n_rows, n_cols, config)
         else:
             agents = sim_output["agents"]
@@ -630,6 +648,15 @@ def run_training_experiment(
                 interval_lifespans.append(surviving_steps)
                 episode += 1
 
+
+            env_grid = create_resource_map(
+                n=n_rows, k=n_cols,
+                num_food=config.grid.n_food,
+                num_wood=config.grid.n_wood,
+                num_gold=config.grid.n_gold,
+                decay_rate=config.grid.decay_rate,
+                min_eff=config.grid.min_eff
+            )
             agents = initialize_agents_isolated(n_agents, n_rows, n_cols, config)
             episode_start_step = step + 1
 
