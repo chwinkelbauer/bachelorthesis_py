@@ -440,6 +440,8 @@ python -m scripts.report --run-dir results/A_s0           # -> report.png + JSON
 
 Runs are deterministic given the seed (verified: a relaunch reproduces the logged metrics exactly).
 
+**Keep-awake (unattended nights):** `scripts/keep_awake.ps1 -Hours 10` (started hidden) prevents the PC from suspending via `SetThreadExecutionState`. It changes no power settings and ends after the given hours or when `results/.stop_keep_awake` exists.
+
 **Long runs** should be started detached from the editor/terminal session, so that a session restart does not kill them
 (Windows PowerShell):
 ```powershell
@@ -557,3 +559,4 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
   - Added the results log (§12). 41 tests.
 - **2026-10-12:** A_s0 (unified features) finished and was re-evaluated against the stronger null (results log §12). The report legend now reads "paired null (as logged during training)", because older logs contain the random-only null.
 - **2026-10-12:** `CLAUDE.md` rewritten as the operating manual. It covers working rules, environment pitfalls, standard commands, the current state, the unattended/overnight protocol with gates, the experiment queue, pending decisions and key literature. The model specification stays in this document.
+- **2026-10-13:** Added `scripts/keep_awake.ps1` after the PC suspended for about 1.5 h during the first unattended night (both B runs paused between iterations ≈ 15 and 16; results unaffected).

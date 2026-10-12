@@ -64,6 +64,10 @@ preferences *invent* money, and which condition causes it?
     -WorkingDirectory (Get-Location).Path -RedirectStandardOutput "results\B_s0.log" `
     -RedirectStandardError "results\B_s0.err" -WindowStyle Hidden -PassThru
   ```
+- **The PC can suspend during unattended nights** even with sleep set to "never": on 2026-10-12/13, both runs and the session were suspended for about 1.5 h, between iteration ≈ 15 and 16, and the 23:27 wake-up fired at 00:35.
+  - At the start of every night, run the keep-awake helper (no power settings are changed; it ends at -Hours or when `results/.stop_keep_awake` exists):
+    `Start-Process powershell -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-File","scripts\keep_awake.ps1","-Hours","10" -WindowStyle Hidden`
+  - A suspension shows up as one huge `seconds` jump in metrics.csv. It does not affect results.
 - **Watching runs:** use Monitor (`tail -F log | grep --line-buffered`, which expires after at most 30 min; re-arm) or a background `until` loop. Check for `Traceback` in the `.err` file. Python processes: `tasklist //FI "IMAGENAME eq python.exe"`.
 - **A running process keeps the code it loaded at start.** Editing files does not affect it. After code changes to metrics, re-run `scripts.evaluate` and `scripts.report` on finished runs.
 - **Speed (12 threads):**
