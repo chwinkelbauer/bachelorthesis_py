@@ -104,6 +104,36 @@ def initialize_agents_isolated(
     return agents
 
 
+NUM_ACTIONS = 11
+MOVE_DELTAS = {1: (-1, 0), 2: (1, 0), 3: (0, -1), 4: (0, 1)}  # Up, Down, Left, Right
+
+
+def get_action_mask(
+    agent: Agent,
+    n_rows: int,
+    n_cols: int,
+    agents: List[Agent] = None,
+    block_occupied: bool = False
+) -> np.ndarray:
+    """
+    Returns a boolean mask of shape (11,) over 0-indexed actions (True = allowed).
+    Movement actions (1-4) are masked when they would leave the grid, and optionally
+    when the target tile is occupied by another living agent (block_occupied=True).
+    All non-movement actions (5-11) remain allowed.
+    """
+    mask = np.ones(NUM_ACTIONS, dtype=bool)
+    occupied = set()
+    if block_occupied and agents is not None:
+        occupied = {a.pos for a in agents if a.alive and a is not agent}
+
+    r, c = agent.pos
+    for action_idx, (dr, dc) in MOVE_DELTAS.items():
+        nr, nc = r + dr, c + dc
+        if not (0 <= nr < n_rows and 0 <= nc < n_cols) or (nr, nc) in occupied:
+            mask[action_idx - 1] = False
+    return mask
+
+
 def execute_move(agent: Agent, action_idx: int, n_rows: int, n_cols: int) -> Agent:
     """
     Executes discrete spatial movement:
@@ -113,6 +143,7 @@ def execute_move(agent: Agent, action_idx: int, n_rows: int, n_cols: int) -> Age
       3: Move Left (c - 1)
       4: Move Right (c + 1)
       5-11: No movement (Stay)
+    Invalid moves are prevented upstream via get_action_mask; clamping is kept as a safety net.
     """
     r, c = agent.pos
     if action_idx == 1:

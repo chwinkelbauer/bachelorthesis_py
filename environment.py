@@ -4,7 +4,7 @@ Ported from R gen_map.R and help.R to Python using NumPy.
 """
 
 import numpy as np
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from config import EnvConfig, DEFAULT_CONFIG
 
 
@@ -56,11 +56,11 @@ def create_resource_map(
 
 def get_nxn_array(n: int, pos: Tuple[int, int], grid: np.ndarray) -> np.ndarray:
     """
-    Extracts an n x n x 3 vision window centered at `pos` (r, c).
+    Extracts an n x n x C vision window centered at `pos` (r, c), where C is the number of grid channels.
     Out-of-bound cells are padded with 0.0.
     """
-    vision = np.zeros((n, n, 3), dtype=np.float32)
-    grid_r, grid_c, _ = grid.shape
+    grid_r, grid_c, n_channels = grid.shape
+    vision = np.zeros((n, n, n_channels), dtype=np.float32)
     half = (n - 1) // 2
 
     for i in range(-half, half + 1):
@@ -74,27 +74,34 @@ def get_nxn_array(n: int, pos: Tuple[int, int], grid: np.ndarray) -> np.ndarray:
     return vision
 
 
-def get_agent_occupancy_map(agents: List[Any], grid_shape: Tuple[int, int]) -> np.ndarray:
+def get_agent_occupancy_map(
+    agents: List[Any],
+    grid_shape: Tuple[int, int],
+    exclude: Optional[Any] = None
+) -> np.ndarray:
     """
-    Creates a 2D binary matrix of shape `grid_shape` indicating agent presence (1.0) or absence (0.0).
+    Creates a 2D matrix of shape `grid_shape` counting living agents per tile.
+    The agent passed as `exclude` (usually the observer itself) is not counted.
     """
     occ = np.zeros(grid_shape, dtype=np.float32)
     for agent in agents:
+        if agent is exclude:
+            continue
         if getattr(agent, 'alive', True):
             r, c = agent.pos
             if 0 <= r < grid_shape[0] and 0 <= c < grid_shape[1]:
-                occ[r, c] = 1.0
+                occ[r, c] += 1.0
     return occ
 
 
 def calculate_inventory_weight(inv: Dict[str, float], weights: Dict[str, float]) -> float:
     """
     Calculates total weight of resources currently held in an inventory:
-    Default unit weights: Food=0.5, Wood=1.0, Gold=2.0.
+    Default unit weights: Food=0.5, Wood=1.0, Gold=0.2.
     """
     wf = weights.get("Food", 0.5)
     ww = weights.get("Wood", 1.0)
-    wg = weights.get("Gold", 2.0)
+    wg = weights.get("Gold", 0.2)
 
     return (inv.get("f", 0.0) * wf) + (inv.get("w", 0.0) * ww) + (inv.get("g", 0.0) * wg)
 
@@ -113,14 +120,25 @@ def calculate_utility(agent: Any, config: EnvConfig = DEFAULT_CONFIG) -> float:
     return float(u_n + u_h + u_g)
 
 
-def extract_agent_observation(agent: Any, environment_grid: np.ndarray, config: EnvConfig = DEFAULT_CONFIG) -> np.ndarray:
+def extract_agent_observation(
+    agent: Any,
+    environment_grid: np.ndarray,
+    config: EnvConfig = DEFAULT_CONFIG,
+    agents: Optional[List[Any]] = None
+) -> np.ndarray:
     """
     Extracts complete observation vector for an agent:
-    [Vision Window Flattened (sight*sight*3), Nutrition, Housing, Food_inv, Wood_inv, Gold_inv, Food_eff, Wood_eff, Gold_eff]
-    Total dimension = 83 (for sight=5).
+    [Vision Window Flattened (sight*sight*4: Food, Wood, Gold, Other Agents),
+     Nutrition, Housing, Food_inv, Wood_inv, Gold_inv, Food_eff, Wood_eff, Gold_eff]
+    Total dimension = 108 (for sight=5).
+    The fourth vision channel counts the other living agents per tile, so agents can perceive
+    potential trading partners and trade networks around them.
     """
     sight_size = config.sight
-    vision_array = get_nxn_array(sight_size, agent.pos, environment_grid)
+    grid_shape = environment_grid.shape[:2]
+    occupancy = get_agent_occupancy_map(agents if agents is not None else [], grid_shape, exclude=agent)
+    full_grid = np.concatenate([environment_grid, occupancy[:, :, None]], axis=2)
+    vision_array = get_nxn_array(sight_size, agent.pos, full_grid)
     vision_vec = vision_array.flatten()
 
     inv_vec = np.array([agent.inv["f"], agent.inv["w"], agent.inv["g"]], dtype=np.float32)

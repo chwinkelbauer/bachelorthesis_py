@@ -19,13 +19,14 @@ class GridConfig:
 
 @dataclass
 class StartAgentConfig:
-    q_start: Tuple[float, float, float] = (4.0, 3.0, 1.0)  # Food, Wood, Gold (Starting weight = 4*0.5 + 3*1.0 + 1*2.0 = 7.0)
+    q_start: Tuple[float, float, float] = (4.0, 3.0, 1.0)  # Food, Wood, Gold (Starting weight = 4*0.5 + 3*1.0 + 1*0.2 = 5.2)
     spec_start: Tuple[float, float] = (20.0, 15.0)          # Nutrition, Housing
 
 @dataclass
 class PreTrainingConfig:
     steps_each: int = 1000
     progression: float = 0.1
+    episode_max: int = 500                                   # Curriculum episode length cap: agents & map are reset after this many steps (and at every stage change)
 
 @dataclass
 class ProgressiveDrainConfig:
@@ -62,6 +63,7 @@ class MAPPOConfig:
     clip_epsilon: float = 0.20                               # PPO surrogate ratio clipping epsilon
     value_loss_coeff: float = 0.50                           # Critic MSE loss weight
     entropy_coeff: float = 0.012                             # Policy entropy exploration coefficient
+    consume_entropy_coeff: float = 0.001                     # Entropy coefficient of the continuous Beta consume-amount policy (differential entropy, separate scale)
     max_grad_norm: float = 0.50                              # Maximum gradient norm clipping
     lr: float = 0.00001                                      # Learning rate for Adam optimizer
     epoch_max: int = 500                                    # Maximum environment steps per training epoch (epoch boundary)
@@ -91,10 +93,11 @@ class EnvConfig:
         "None": 0.0,
         "Food": 0.5,                                         # Food weight per unit
         "Wood": 1.0,                                         # Wood weight per unit
-        "Gold": 2.0                                          # Gold weight per unit (heavy precious metal)
+        "Gold": 0.2                                          # Gold weight per unit (light-weight, compact store of value)
     })
     dead_time: Tuple[int, int] = (5, 8)            # (max_hunger_steps, max_cold_steps)
-    utility: Tuple[float, float, float] = (1.0, 1.2, 0.1)  # weights for (Nutrition, Housing, Gold)
+    utility: Tuple[float, float, float] = (1.0, 1.2, 0.05)  # weights for (Nutrition, Housing, Gold); small but non-zero gold utility
+    mask_occupied_tiles: bool = True                       # Movement onto tiles occupied by other living agents is masked (one agent per tile)
     death_penal: float = 15.0
     consume_yield: Tuple[float, float] = (3.0, 2.5)       # (Food -> N, Wood -> H)
     decrease: Tuple[float, float] = (0.4, 0.3)            # Baseline (N_drain, H_drain per step)
@@ -108,10 +111,10 @@ class EnvConfig:
     @property
     def input_dim(self) -> int:
         """Dynamically compute input dimension based on sight size:
-        vision (sight^2 * 3) + needs (2) + inventory (3) + efficiencies (3)
-        For sight=5: 5*5*3 + 2 + 3 + 3 = 83.
+        vision (sight^2 * 4: Food, Wood, Gold, Other Agents) + needs (2) + inventory (3) + efficiencies (3)
+        For sight=5: 5*5*4 + 2 + 3 + 3 = 108.
         """
-        return (self.sight * self.sight * 3) + 2 + 3 + 3
+        return (self.sight * self.sight * 4) + 2 + 3 + 3
 
 
 # Default global environment configuration instance

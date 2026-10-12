@@ -12,7 +12,7 @@ from typing import List, Dict, Tuple, Any
 
 from config import EnvConfig, DEFAULT_CONFIG
 from environment import create_resource_map, extract_agent_observation, calculate_inventory_weight
-from agent import initialize_agents_isolated, execute_move, execute_gather, execute_consumption, Agent
+from agent import initialize_agents_isolated, execute_move, execute_gather, execute_consumption, get_action_mask, NUM_ACTIONS, Agent
 
 
 def get_movement_towards(curr_r: int, curr_c: int, target_r: int, target_c: int) -> int:
@@ -149,6 +149,7 @@ def run_expert_collection(
     all_actions = []
     all_consume_types = []
     all_consume_amts = []
+    all_action_masks = []
 
     for ep in range(1, num_episodes + 1):
         env_grid = create_resource_map(
@@ -169,10 +170,14 @@ def run_expert_collection(
                 if not agent.alive:
                     continue
 
-                state_vec = extract_agent_observation(agent, env_grid, config)
+                state_vec = extract_agent_observation(agent, env_grid, config, agents)
+                action_mask = get_action_mask(agent, n_rows, n_cols, agents, config.mask_occupied_tiles)
                 decisions = get_expert_decisions(agent, env_grid, config)
+                if not action_mask[decisions["action_idx"] - 1]:
+                    decisions["action_idx"] = 11  # Expert target blocked -> Stand
 
                 all_states.append(state_vec)
+                all_action_masks.append(action_mask)
                 all_actions.append(decisions["action_idx"])
                 all_consume_types.append(decisions["consume_type"])
                 all_consume_amts.append(decisions["consume_fraction"])
@@ -190,7 +195,8 @@ def run_expert_collection(
         "states": np.array(all_states, dtype=np.float32),
         "actions": np.array(all_actions, dtype=np.int64),
         "consume_types": np.array(all_consume_types, dtype=np.int64),
-        "consume_amts": np.array(all_consume_amts, dtype=np.float32)
+        "consume_amts": np.array(all_consume_amts, dtype=np.float32),
+        "action_masks": np.array(all_action_masks, dtype=bool)
     }
 
     with open(save_path, "wb") as f:
@@ -216,7 +222,11 @@ class ExpertDataset(Dataset):
         self.actions = torch.tensor(data["actions"] - 1, dtype=torch.long)
         # Convert 1-indexed R consume types (1..3) to 0-indexed PyTorch class indices (0..2)
         self.consume_types = torch.tensor(data["consume_types"] - 1, dtype=torch.long)
-        self.consume_amts = torch.tensor(data["consume_amts"], dtype=torch.float32).unsqueeze(1)
+        self.consume_amts = torch.tensor(data["consume_amts"], dtype=torch.float32)
+        if "action_masks" in data:
+            self.action_masks = torch.tensor(data["action_masks"], dtype=torch.bool)
+        else:
+            self.action_masks = torch.ones((len(self.states), NUM_ACTIONS), dtype=torch.bool)
 
     def __len__(self):
         return len(self.states)
@@ -226,5 +236,6 @@ class ExpertDataset(Dataset):
             "state": self.states[idx],
             "action": self.actions[idx],
             "consume_type": self.consume_types[idx],
-            "consume_amt": self.consume_amts[idx]
+            "consume_amt": self.consume_amts[idx],
+            "action_mask": self.action_masks[idx]
         }

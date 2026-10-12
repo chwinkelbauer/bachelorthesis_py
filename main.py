@@ -20,6 +20,8 @@ from training import (
     run_simulation_step
 )
 from sim_check import sim_check_robust
+from metrics import set_global_seed
+from evaluation import run_evaluation
 
 
 def run_test_head_function(steps: int = 10, encoder_type: str = "mlp") -> None:
@@ -92,15 +94,25 @@ def main():
     parser.add_argument("--pretrain", action="store_true", help="Run supervised pre-training")
     parser.add_argument("--epochs", "-epochs", "-e", type=int, default=10, help="Pre-training epochs")
     parser.add_argument("--curriculum", action="store_true", help="Run curriculum learning")
+    parser.add_argument("--full-drain-steps", type=int, default=0, help="Additional steps trained at 100%% drain. With --curriculum: appended after the ramp. Without --curriculum: continues a loaded brain at 100%% drain only")
     parser.add_argument("--train", action="store_true", help="Run full MAPPO training experiment")
     parser.add_argument("--total-steps", "-total-steps", "-s", type=int, default=20000, help="Total steps for RL experiment")
     parser.add_argument("--encoder", type=str, default="mlp", choices=["mlp", "gnn"], help="Encoder architecture (mlp or gnn)")
     parser.add_argument("--save-brain", type=str, default=None, help="File path to save the trained global brain weights (e.g. pretrained_brain.pt)")
     parser.add_argument("--load-brain", type=str, default=None, help="File path to load pre-trained global brain weights (e.g. pretrained_brain.pt)")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for Python, NumPy and PyTorch (reproducible runs)")
+    parser.add_argument("--evaluate", action="store_true", help="Evaluate a policy on fresh maps at full drain without learning")
+    parser.add_argument("--eval-policy", type=str, default="brain", choices=["brain", "expert", "random"], help="Policy to evaluate (brain requires --load-brain or a brain trained in the same command)")
+    parser.add_argument("--eval-episodes", type=int, default=20, help="Number of evaluation episodes (fresh maps)")
+    parser.add_argument("--deterministic", action="store_true", help="Evaluate the brain with argmax / mean actions instead of sampling")
 
     args = parser.parse_args()
 
     config = DEFAULT_CONFIG
+
+    if args.seed is not None:
+        set_global_seed(args.seed)
+        print(f"-> Random seed set to {args.seed}")
 
     if args.check:
         sim_check_robust(config, num_maps=200)
@@ -130,7 +142,13 @@ def main():
     if args.curriculum:
         if brain is None:
             brain = MultiHeadGlobalBrain(input_dim=config.input_dim, hidden_dim=64, encoder_type=args.encoder)
-        brain = run_curriculum_training(brain, config=config)
+        brain = run_curriculum_training(brain, config=config, full_drain_steps=args.full_drain_steps)
+        if args.save_brain is None and not args.train:
+            args.save_brain = "curriculum_brain.pt"
+    elif args.full_drain_steps > 0:
+        if brain is None:
+            raise SystemExit("--full-drain-steps without --curriculum requires --load-brain (e.g. curriculum_brain.pt)")
+        brain = run_curriculum_training(brain, config=config, full_drain_steps=args.full_drain_steps, include_ramp=False)
         if args.save_brain is None and not args.train:
             args.save_brain = "curriculum_brain.pt"
 
@@ -140,9 +158,15 @@ def main():
         print(f"-> Saved global brain weights to '{args.save_brain}'")
 
     if args.train:
-        run_training_experiment(total_steps=args.total_steps, x_steps=2500, config=config, pre_trained_brain=brain)
+        brain = run_training_experiment(total_steps=args.total_steps, x_steps=2500, config=config, pre_trained_brain=brain)
 
-    if not any([args.check, args.test, args.collect, args.pretrain, args.curriculum, args.train]):
+    if args.evaluate:
+        if args.eval_policy == "brain" and brain is None:
+            raise SystemExit("--evaluate with --eval-policy brain requires --load-brain (e.g. curriculum_brain.pt)")
+        run_evaluation(policy=args.eval_policy, brain=brain, config=config,
+                       episodes=args.eval_episodes, deterministic=args.deterministic)
+
+    if not any([args.check, args.test, args.collect, args.pretrain, args.curriculum, args.full_drain_steps > 0, args.train, args.evaluate]):
         print("No specific task flag provided. Running quick test suite (--test)...")
         run_test_head_function(steps=10, encoder_type=args.encoder)
 
