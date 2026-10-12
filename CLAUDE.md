@@ -142,7 +142,7 @@ python -m scripts.report --run-dir results/A_s0                             # re
 ## 7. Experiment queue (ordered; tick items and add the result path)
 - [x] 1. A_s0 finished at 16:22 and was re-evaluated against the stronger null: indirect exchange, no money (FRAMEWORK §12). Logs are in `results/A_s0/train.log`; the old evaluation is kept as `evaluation_random_null_only.json`.
 - [ ] 2. **B warm from A:** `--preset B --seed 0 --init results/A_s0/checkpoint.pt --run-dir results/B_fromA_s0`
-- [ ] 3. **B from scratch** (curriculum control, run in parallel with 2): `--preset B --seed 0` → `results/B_s0`
+- [x] 3. **B from scratch**: `results/B_s0`. Stopped at iteration 69 after failing the gate (autarky collapse, survival 10–15%). Diagnosis in §8 / FRAMEWORK §11.
 - [ ] 4. Gate check on 2 and 3. If both fail: stop the B/C chain and diagnose.
 - [ ] 5. **C warm from B:** `--preset C --seed 0 --init results/B_fromA_s0/checkpoint.pt --run-dir results/C_fromB_s0`
 - [ ] 6. **C from scratch:** `--preset C --seed 0` → `results/C_s0`
@@ -156,6 +156,19 @@ python -m scripts.report --run-dir results/A_s0                             # re
 
 ## 8. Pending decisions (for the user; add proposals here)
 - *(decided 2026-10-12)* Commit policy for unattended work: work branch `night/<date>`, no push (§2.8).
+- **[NEW 2026-10-13, needs decision] Stage-B survival requires intermediation; learning cannot discover it before agents die.**
+  - **Evidence:**
+    - B runs at iteration 50: survival 14% (warm-started from A) and 10% (scratch). The scratch run collapsed into autarky by iteration 50–60. The 89% of agents that depend on others' goods survive 3.5% / 0%.
+    - 76–85% of deprived rounds happen because the agent holds less than γ, i.e. it has run out.
+    - A hand-coded sensible barter policy also only reaches 22% survival (12% for dependents). The results do *not* improve with a 4× supply surplus, 4 trade sessions per round, a death threshold of 10, or a money convention (the most durable good accepted by all). They do improve with raw-only subsistence goods (55%) and a complete network (63%).
+    - Flow analysis (heuristic, raw-only variant): dependents receive more than they need *in aggregate* (2817 vs. 1797 units), but only 56% ever receive any. Many have no neighbour who earns their subsistence good, so survival requires **intermediation along network chains**.
+  - **Interpretation:** survival is gated by exactly the coordination problem (indirect exchange through intermediaries) that money solves. That is scientifically ideal, but a learning agent dies before it can explore it, so the gradient pushes toward autarky. Not a bug.
+  - **Options:**
+    - (a) **Mortality curriculum:** death off (subsistence only as a utility kink) for the first ~100–150 iterations, then on. Agents can then learn trade and intermediation first.
+    - (b) **Subsistence only from raw goods** (`preferences.subsistence_max_tier=0`, `goods.raw_consumable_prob=1.0`): shorter supply chains; heuristic survival 22% → 55%.
+    - (c) Longer training (e.g. 1000 iterations). Uncertain; the scratch run already collapsed.
+    - (d) Guarantee every agent a neighbour who earns its subsistence good. **Not recommended:** it removes the intermediation need that makes the economy interesting.
+  - **Recommendation:** (a) + (b). Both are economics/curriculum changes and need approval. Diagnostic scripts used (scratchpad, not in the repo): survival by agent group, deprivation causes, heuristic barter/money policies, calibration variants.
 - **Confirmatory design:** number of seeds (≥ 5 planned), and which knock-in/knock-out conditions and dose–response sweeps to run (FRAMEWORK §6.2/6.3). Needs a proposal and approval.
 - **Final stage thresholds** (`MetricsConfig`) must be fixed before confirmatory runs. They are currently provisional.
 - **Planned extensions (need approval):**

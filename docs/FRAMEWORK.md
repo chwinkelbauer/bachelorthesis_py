@@ -459,6 +459,11 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
   - The policy drifted toward autarky (71% idle labour, trade rate 0.42 → 0.11).
 
   Fix: the starting reserve (§3.4), plus warm-starting B from a trained A model. The pilot was stopped and is kept as a record of this failure mode (`results/pilot_B_s0_no_reserve`). Re-evaluated in reserve economies, its policy still eats the reserve within about 6 rounds: consumption smoothing has to be learned with the reserve in training.
+- **Stage-B survival requires intermediation (diagnosed 2026-10-13, with the reserve).** In B runs at iteration 50, the dependent agents (89%) survive 0–3.5%.
+  - A hand-coded sensible barter policy reaches only 22% overall survival.
+  - It does not improve with a 4× supply surplus, more trade sessions per round, later death, or a money convention. It does improve with raw-only subsistence goods (55%) and a complete network (63%).
+  - In aggregate, dependents receive more than they need, but only 56% ever receive their subsistence good: many have no neighbour who earns it, and goods must travel along chains via intermediaries.
+  - Survival is therefore gated by the very coordination problem money solves, and learners die before discovering it. Options (mortality curriculum, raw-only subsistence) await a decision (CLAUDE.md §8).
 - **Untrained stage-B agents mostly die** (random policy: about 7% survive 24 rounds), because subsistence requires consuming ≥ γ every round. After the feasibility scaling (§3.4), these deaths are behavioural, not scarcity.
 - **Consuming goods with α = 0 is masked** (dominated); such goods can still be held, processed or traded.
 - **The immediate ΔU in the stage-B ledger** is a holdings-utility proxy. The double-coincidence share in B is therefore indicative only.
@@ -501,6 +506,8 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
 - **Costly indirect exchange:** agents also *give up valued goods* to acquire no-use goods that they later resell (costly resale 0.44 vs. 0.21). That is clear evidence of purposeful indirect exchange.
 - **Change points:** resale and HHI at iterations 60 and 110; efficiency at 50, 100 and 150.
 - **Observation (not a claim):** an early transient. HHI peaked at 0.49 around iteration 30, and two training batches (iterations 40–50) were classified as "money", while trade per meeting was very low (≈ 0.12). Concentration then decayed as trading widened. Note that the training log of this run used the random-only null (code loaded before the stronger-null change); only the held-out evaluation uses the stronger null.
+
+**B, seed 0, from scratch** (`results/B_s0`, with reserve; stopped at iteration 69 after failing the gate): autarky from iteration ≈ 50 (trade rate 0.41 → 0.00), survival 10–15%. This replicates the pilot-B collapse despite the reserve. See §11 for the intermediation diagnosis.
 
 **Pilot B, seed 0** (no reserve; `results/pilot_B_s0_no_reserve`, stopped at iteration 86): collapsed into autarky (trade rate 0.42 → 0.002, survival 9% → 14%). Diagnosis and fix in §11.
 
@@ -560,3 +567,7 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
 - **2026-10-12:** A_s0 (unified features) finished and was re-evaluated against the stronger null (results log §12). The report legend now reads "paired null (as logged during training)", because older logs contain the random-only null.
 - **2026-10-12:** `CLAUDE.md` rewritten as the operating manual. It covers working rules, environment pitfalls, standard commands, the current state, the unattended/overnight protocol with gates, the experiment queue, pending decisions and key literature. The model specification stays in this document.
 - **2026-10-13:** Added `scripts/keep_awake.ps1` after the PC suspended for about 1.5 h during the first unattended night (both B runs paused between iterations ≈ 15 and 16; results unaffected).
+- **2026-10-13:** First night:
+  - B_s0 (scratch) stopped at iteration 69 after failing the gate (autarky).
+  - Stage-B survival diagnosis recorded (§11): survival requires intermediation; heuristic feasibility tests were run.
+  - The proposal is in CLAUDE.md §8. A_s1 started (queue item 9).
