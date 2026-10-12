@@ -81,6 +81,18 @@ class TestMoneyMetrics(unittest.TestCase):
         self.assertGreater(m["no_use_share"], 0.0)
         self.assertAlmostEqual(m["money_hhi"], 1.0, places=5)
 
+    def test_free_swap_is_resale_but_not_costly(self):
+        # agent 0 gave up good 1, which it does not value: Kiyotaki-Wright indirect exchange, but not costly
+        m = compute_money_metrics(self._record(True), MetricsConfig())
+        self.assertAlmostEqual(m["resale_rate"], 1.0, places=5)
+        self.assertAlmostEqual(m["costly_resale_rate"], 0.0, places=5)
+        self.assertAlmostEqual(m["costly_no_use_share"], 0.0, places=5)
+
+    def test_stronger_null_is_elementwise_max(self):
+        from learning.evaluate import stronger_null
+        s = stronger_null({"random": {"a": 0.1, "b": 0.5, "stage": "x"}, "zic": {"a": 0.3, "b": 0.2, "stage": "y"}})
+        self.assertEqual(s, {"a": 0.3, "b": 0.5})
+
     def test_gift_is_not_resale(self):
         m = compute_money_metrics(self._record(False), MetricsConfig())
         self.assertAlmostEqual(m["resale_rate"], 0.0, places=5)

@@ -27,13 +27,15 @@ def stage_a_full_info() -> ExperimentConfig:
 def stage_b() -> ExperimentConfig:
     """
     Stage B: production economy with lumpy raw-goods income (every P_i in {1..4} rounds), processing along the recipe
-    DAG, learned consumption, Stone-Geary subsistence on one basic good and death after 5 deprived rounds.
+    DAG, learned consumption, Stone-Geary subsistence on one basic good and death after 5 deprived rounds. Agents start
+    with a reserve of their subsistence good for 10 rounds.
     Rollouts of 24 rounds are truncated and bootstrapped (discount 0.97).
     """
     return ExperimentConfig(
         name="B", stage="B",
         preferences=PreferenceConfig(subsistence=True, subsistence_range=(0.2, 0.5)),
-        production=ProductionConfig(income=True, processing=True, income_period_range=(1, 4)),
+        production=ProductionConfig(income=True, processing=True, income_period_range=(1, 4),
+                                    subsistence_buffer_rounds=10.0),
         market=MarketConfig(economy="production", rounds=24),
         ppo=PPOConfig(worlds=32, gamma=0.97),
     )

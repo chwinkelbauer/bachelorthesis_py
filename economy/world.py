@@ -68,6 +68,8 @@ class EconomyBatch:
                             else torch.zeros(B, N, G))
             # start with one income lump and one harvest of every accessible good
             self.x = self._fit_capacity(torch.zeros(B, N, G), self.income + self.harvest)
+            # starting reserve of the subsistence good: time to learn to trade before deprivation kills
+            self.x = self._fit_capacity(self.x, self.gamma * pc.subsistence_buffer_rounds)
         else:
             self.income = torch.zeros(B, N, G)
             self.period = torch.ones(B, N, dtype=torch.long)

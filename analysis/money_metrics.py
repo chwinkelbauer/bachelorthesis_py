@@ -30,11 +30,12 @@ def _receipts(trades: dict):
     )
 
 
-def resale_volume(rec: EpisodeRecord, rows: dict, no_use: torch.Tensor) -> torch.Tensor:
+def resale_volume(rec: EpisodeRecord, rows: dict, no_use: torch.Tensor, costly_only: bool = False) -> torch.Tensor:
     """
     Units of each good that were received without use and later passed on by the same agent *in exchange for a
     good the agent values* (a completed indirect exchange), (B, G).
     Per (agent, good) a pool of no-use receipts is kept; an outflow is counted as resale up to the pool size.
+    costly_only: only receipts from trades in which the agent gave up a good it values enter the pool.
     """
     B, N, G = rec.alpha.shape
     pool = np.zeros((B, N, G))
@@ -49,7 +50,8 @@ def resale_volume(rec: EpisodeRecord, rows: dict, no_use: torch.Tensor) -> torch
         passed = np.minimum(outflow[t], pool[bt, at]) * gets_valued
         resold[bt] += passed
         pool[bt, at] -= passed
-        pool[bt, at] += inflow[t] * nu[bt, at]
+        costly = float((outflow[t] * (1.0 - nu[bt, at])).sum() > 0)
+        pool[bt, at] += inflow[t] * nu[bt, at] * (costly if costly_only else 1.0)
     return torch.from_numpy(resold).float()
 
 
@@ -76,6 +78,15 @@ def compute_money_metrics(rec: EpisodeRecord, cfg: MetricsConfig) -> Dict[str, f
     total_recv, total_nu = float(recv_value.sum()), float(nu_value.sum())
     out["no_use_share"] = total_nu / total_recv if total_recv > 0 else 0.0
     out["resale_rate"] = float(resold_value.sum()) / total_nu if total_nu > 0 else 0.0
+
+    # descriptive (sufficient, not necessary): no-use goods acquired by giving up a valued good
+    costly_nu = 0.0
+    if n_trades:
+        gave_valued = ((rows["outflow"] * (1.0 - no_use[rows["b"], rows["agent"]])).sum(-1) > 0).float()
+        costly_nu = float((rows["inflow"] * prices[rows["b"]] * no_use[rows["b"], rows["agent"]]).sum(-1).mul(gave_valued).sum())
+    costly_resold = float((resale_volume(rec, rows, no_use, costly_only=True) * prices).sum())
+    out["costly_no_use_share"] = costly_nu / total_recv if total_recv > 0 else 0.0
+    out["costly_resale_rate"] = costly_resold / costly_nu if costly_nu > 0 else 0.0
 
     # --- concentration of indirect exchange on one good (per world) -------------------------------
     world_nu = nu_value.sum(-1)

@@ -202,3 +202,21 @@ class TestHarvestingStageC(unittest.TestCase):
     def test_train_smoke(self):
         with tempfile.TemporaryDirectory() as run_dir:
             train(get_preset("quick_C"), run_dir, verbose=False)
+
+
+class TestSubsistenceReserve(unittest.TestCase):
+    def test_reserve_at_start(self):
+        set_seed(12)
+        world = EconomyBatch(get_preset("B"), 8)
+        world.reset()
+        rounds = world.cfg.production.subsistence_buffer_rounds
+        sub = world.gamma > 0
+        self.assertGreater(rounds, 0)
+        load = (world.x * world.weight.unsqueeze(1)).sum(-1)
+        full = load < world.capacity - 1e-3                  # agents whose reserve was not capped by capacity
+        reserve_ok = (world.x >= world.gamma * rounds - 1e-4) | ~sub
+        self.assertTrue(reserve_ok.all(-1)[full].all())
+
+    def test_reserve_off_by_default(self):
+        from configs.base import ProductionConfig
+        self.assertEqual(ProductionConfig().subsistence_buffer_rounds, 0.0)

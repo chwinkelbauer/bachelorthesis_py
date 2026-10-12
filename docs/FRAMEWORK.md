@@ -2,7 +2,7 @@
 
 > **This document describes the current state of the project.** Every change to the code, the model, the
 > parameters or the experimental design must update the affected sections and add a line to the
-> [Changelog](#12-changelog) in the same change. If code and this document disagree, that is a bug.
+> [Changelog](#13-changelog) in the same change. If code and this document disagree, that is a bug.
 >
 > Last updated: 2026-10-12 · Implemented stages: **A, B, C, D** · Experiments: pilots running (A, B)
 
@@ -100,7 +100,7 @@ In stage A the argument x is *holdings*. From stage B on it is the *consumption 
 - Each agent earns `income_goods_per_agent` = 1 raw good at a mean flow f_ik ~ U[1, 2] per round.
 - Every raw good has at least one earner.
 - The income is paid as a **lump** f_ik·P_i every P_i rounds, with P_i ~ U{1..4} and a random phase.
-- Agents start with one lump.
+- Agents start with one lump and a **reserve of their subsistence good** worth `subsistence_buffer_rounds` = 10 rounds of γ (capacity-limited). Without it, 89% of agents hold nothing they can eat and must complete the right trade within 5 rounds. Untrained agents never manage that, so only self-sufficient agents survived: a learning trap, not an economic result (§11).
 - **Control:** constant flow (P_i = 1), preset `B_constant_income`.
 - This creates the *timing mismatch* needed for a store-of-value motive (factor F5b).
 
@@ -243,8 +243,11 @@ The layout is identical across stages, so weights can be carried A → B → C (
 
 ### 4.4 Baselines and counterfactuals (`agents/baselines.py`)
 - **RandomPolicy:** uniformly random allowed choices in all modes. This is the null of the exchange economy.
-- **ZI-C** (Gode & Sunder 1993): random offers, accepts only if ΔU_total ≥ 0 (myopic individual rationality). It never performs indirect exchange.
-- **RandomTradeNull(policy):** the policy's own labour and consumption, with random trading. This is the null of the production economy: it isolates trade behaviour.
+- **ZI-C** (Gode & Sunder 1993): random offers, accepts only if ΔU_total ≥ 0 (myopic individual rationality).
+  - It *does* accept goods it has no use for whenever that costs nothing (e.g. swapping one useless good for another), and it passes them on by chance.
+  - In the A pilot, that gave a resale rate of 0.21 vs. 0.12 for random play.
+  - It is therefore a second, stronger null, not a "no indirect exchange" reference.
+- **RandomTradeNull(policy) / ZICTradeNull(policy):** the policy's own labour and consumption, with random / ZI-C trading. These are the nulls of the production economy: they isolate trade behaviour.
 - **NoTradePolicy(policy):** the policy's own labour and consumption, with trading switched off. Comparing against it gives the gains from trade.
 
 ---
@@ -290,6 +293,7 @@ The layout is identical across stages, so weights can be carried A → B → C (
 | double_coincidence_share, speculative_acceptance_share | trades where both sides gain immediately / receipts with ΔU < 0 |
 | efficiency_vs_walras / _planner | (W_final − W_no-trade) / (W_bench − W_no-trade) |
 | ex_post_ir_violation | share of agents ending below their no-trade utility |
+| costly_no_use_share, costly_resale_rate | *descriptive only:* the same measures restricted to no-use goods acquired by giving up a valued good. This is a sufficient sign of purposeful indirect exchange, but not a necessary one: in Kiyotaki–Wright, agents give up their own non-consumed production good, which costs nothing. It is therefore not used for classification |
 
 **Production economy (stage B on), fate-based.** Volumes are normalised per (world, good) by the supply S_bk, not by prices: input-only goods would get a Walras price of 0 and drop out of exactly the analysis that matters.
 
@@ -307,16 +311,18 @@ The layout is identical across stages, so weights can be carried A → B → C (
 ### 5.4 Stage classification (null-referenced)
 **Why the null is needed:** an untrained/random policy already produces large no-use shares (about 0.49 in A). Volume alone is therefore not evidence of money.
 
-**Method:** every benchmark batch is re-run with the **null** on the **identical economies** (same RNG state at reset):
-- exchange: RandomPolicy
-- production: RandomTradeNull(policy)
+**Method:** every benchmark batch is re-run with **two nulls** on the **identical economies** (same RNG state at reset), and is judged against the **stronger null** (element-wise maximum of their metrics):
+- exchange: RandomPolicy and ZICPolicy
+- production: RandomTradeNull(policy) and ZICTradeNull(policy)
+
+Evaluations report both nulls (`null_random_*`, `null_zic_*`) and the maximum (`null_*`).
 
 | Stage | Exchange (A) | Production (B+) |
 |---|---|---|
 | autarky | trade_rate < 0.02 | trade_rate < 0.02 |
-| barter | no_use_share < 0.05 **or** resale_rate < null + 0.05 | pass_through_rate < null + 0.05 |
+| barter | no_use_share < 0.05 **or** resale_rate < stronger null + 0.05 | pass_through_rate < stronger null + 0.05 |
 | indirect_exchange | otherwise, unless money | otherwise, unless money |
-| money | money_hhi ≥ null + 0.15 | money_hhi ≥ null + 0.15 |
+| money | money_hhi ≥ stronger null + 0.15 | money_hhi ≥ stronger null + 0.15 |
 
 The thresholds are **provisional** (`MetricsConfig`) and will be fixed before the confirmatory experiments.
 
@@ -368,7 +374,7 @@ The thresholds are **provisional** (`MetricsConfig`) and will be fixed before th
 | preferences | subsistence / subsistence_goods / subsistence_range / subsistence_max_tier | off / 1 / (0.5, 1.5) / 1 |
 | endowments (A) | goods_per_agent / amount_range / consumable_only | 2 / (2, 10) / true |
 | production (B) | income / income_goods_per_agent / income_flow_range / income_period_range | off / 1 / (1, 2) / (1, 4) |
-| production (B) | subsistence_surplus κ / processing | 2.0 / off |
+| production (B) | subsistence_surplus κ / processing / subsistence_buffer_rounds | 2.0 / off / 0 (presets B–D: 10) |
 | production (C) | harvesting / access_goods_per_agent / skill_sigma | off / 2 / 0.5 |
 | ledger (D) | enabled / switch_round | off / −1 (never) |
 | network | kind / degree / rewire_prob | small_world / 4 / 0.1 |
@@ -385,7 +391,7 @@ The thresholds are **provisional** (`MetricsConfig`) and will be fixed before th
 | `A` | Stage A default (small world, private preferences) |
 | `A_complete` | Stage A, complete network (minimal search friction) |
 | `A_full_info` | Stage A, observable partner preferences |
-| `B` | Stage B: economy = production, income on (P ∈ {1..4}), processing on, subsistence on with γ ~ U[0.2, 0.5], rounds = 24, worlds = 32, γ_RL = 0.97 |
+| `B` | Stage B: economy = production, income on (P ∈ {1..4}), processing on, subsistence on with γ ~ U[0.2, 0.5], starting reserve 10 rounds, rounds = 24, worlds = 32, γ_RL = 0.97 |
 | `B_constant_income` | `B` with constant income (P = 1); control for F5b |
 | `C` | `B` without income, with harvesting (access 2 of 4 raw goods, skill σ = 0.5) |
 | `C_no_specialization` | `C` with full access and σ = 0; control for F2 |
@@ -445,6 +451,12 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
 - **Stage A has no time dimension beyond R = 8 rounds.** Only money's transaction role can appear there (by design, §6.1).
 - **Agent embeddings are computed once per round from the round-start state.** Phase-specific changes (after labour or trade) enter only through the decision tokens, which use current holdings. This is an approximation: agents observe their neighbourhood at the start of the round.
 - **No agent memory across rounds yet.** The standing offer is the only negotiation history. With the ledger off, agents therefore have neither public *nor private* memory of past trades, so F6 currently contrasts "public record" with "no memory at all". A GRU memory (private memory) is planned to separate the two.
+- **Stage-B pilot (seed 0, no reserve), diagnosed at iteration 50.** Overall survival was 11%:
+  - Agents that earn their subsistence good, or all of its raw inputs, survived (100% / 94%).
+  - The 89% that need inputs from others all died, at round ≈ 4.
+  - The policy drifted toward autarky (71% idle labour, trade rate 0.42 → 0.11).
+
+  Fix: the starting reserve (§3.4), plus warm-starting B from a trained A model. The pilot was stopped and is kept as a record of this failure mode (`results/pilot_B_s0_no_reserve`). Re-evaluated in reserve economies, its policy still eats the reserve within about 6 rounds: consumption smoothing has to be learned with the reserve in training.
 - **Untrained stage-B agents mostly die** (random policy: about 7% survive 24 rounds), because subsistence requires consuming ≥ γ every round. After the feasibility scaling (§3.4), these deaths are behavioural, not scarcity.
 - **Consuming goods with α = 0 is masked** (dominated); such goods can still be held, processed or traded.
 - **The immediate ΔU in the stage-B ledger** is a holdings-utility proxy. The double-coincidence share in B is therefore indicative only.
@@ -454,7 +466,26 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
 - **Labour specialisation needs a reference:** restricted access mechanically raises the index (§5.3), so it is interpreted against `C_no_specialization` and the null.
 - **The first stage-A pilot run (seed 0) used the pre-unification feature layout** (8/9/15/10 features). Its checkpoint does not load into the current model, so stage A must be re-trained for curriculum warm starts.
 
-## 12. Changelog
+## 12. Results log
+**Pilot A, seed 0** (300 iterations, pre-unification features; `results/pilot_A_s0_old_features`, held-out evaluation over 4 batches × 64 economies):
+
+| | learned greedy | learned stochastic | ZI-C | random |
+|---|---|---|---|---|
+| efficiency vs. Walras | 0.54 | 0.53 | 0.23 | 0.09 |
+| double-coincidence share of trades | 0.69 | 0.61 | 0.15 | 0.10 |
+| speculative acceptance | 0.06 | 0.08 | 0.25 | 0.37 |
+| ex-post IR violation | 0.015 | 0.028 | 0.28 | 0.37 |
+| resale rate (completed indirect exchange) | 0.40 | 0.37 | 0.21 | 0.12 |
+| money_hhi | 0.36 | 0.36 | 0.24 | 0.25 |
+| stage vs. stronger null (resale 0.21, HHI 0.245) | indirect exchange | indirect exchange | barter | barter |
+
+- **What emerged:** efficient, mostly mutually beneficial barter plus purposeful indirect exchange. Change points in resale, no-use share and efficiency fall at **iteration ≈ 50**.
+- **What did not emerge:** money. Concentration is +0.11 over the stronger null, below the +0.15 threshold. The most re-traded good has average spoilage and weight ranks (≈ 0.5), so there is no saleability selection.
+- **Theory check:** consistent with stage A offering only a transaction motive. A single "money" batch at iteration 290 was not confirmed on held-out economies (noise).
+
+**Pilot B, seed 0** (no reserve; `results/pilot_B_s0_no_reserve`, stopped at iteration 86): collapsed into autarky (trade rate 0.42 → 0.002, survival 9% → 14%). Diagnosis and fix in §11.
+
+## 13. Changelog
 - **2026-10-12:** Complete rewrite. The grid-world survival simulation (agent.py, environment.py, dataset.py, training.py, network.py, sim_check.py, main.py, config.py, evaluation.py, metrics.py and the expert data/checkpoints) was removed; it remains in git history. Implemented:
   - stage A of the network economy
   - sparse Dirichlet log preferences
@@ -498,3 +529,13 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
 
   Motivation: the stage-B pilot (300 iterations, about 3 h) cannot finish before a planned shutdown.
 - **2026-10-12:** Added `scripts/report.py` (run report figure + JSON summary with the stage timeline, first iteration per stage, change points and evaluation). It also works on interrupted runs.
+- **2026-10-12:** Added the **subsistence reserve** (`production.subsistence_buffer_rounds`; default 0 keeps old configurations reproducible; presets B–D: 10) after diagnosing the stage-B learning trap (§11). Decided:
+  - stop the B pilot
+  - re-train A with the unified feature layout, as the base for the A→B→C curriculum
+
+  2 tests (39 in total).
+- **2026-10-12:** **Stronger null:** stages are now classified against the element-wise maximum of two paired nulls (random and ZI-C; production: RandomTradeNull and ZICTradeNull). The change was prompted by ZI-C itself being classified as indirect exchange in the A pilot.
+  - Added descriptive `costly_no_use_share` / `costly_resale_rate`. They are not used for classification, because a "costly only" criterion would exclude Kiyotaki–Wright indirect exchange (giving up a non-consumed production good). This is a deliberately narrower version of the approved fix; the user was informed.
+  - Resume now rewrites metrics.csv with the current columns.
+  - Added the results log (§12). 41 tests.
+- **2026-10-12:** `CLAUDE.md` rewritten as the operating manual. It covers working rules, environment pitfalls, standard commands, the current state, the unattended/overnight protocol with gates, the experiment queue, pending decisions and key literature. The model specification stays in this document.

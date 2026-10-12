@@ -32,7 +32,8 @@ from learning.evaluate import paired_null_metrics
 TRAIN_FIELDS = ("iteration", "seconds", "mean_episode_reward", "trade_rate")
 LOSS_FIELDS = ("policy_loss", "value_loss", "entropy", "approx_kl", "clip_frac")
 EXCHANGE_FIELDS = (
-    "no_use_share", "resale_rate", "money_hhi", "worlds_with_indirect_exchange", "double_coincidence_share",
+    "no_use_share", "resale_rate", "money_hhi", "costly_no_use_share", "costly_resale_rate",
+    "worlds_with_indirect_exchange", "double_coincidence_share",
     "speculative_acceptance_share", "efficiency_vs_walras", "efficiency_vs_planner", "ex_post_ir_violation",
     "money_good_spoilage_rank", "money_good_weight_rank",
 )
@@ -90,14 +91,14 @@ def _restore_rng(data: dict, cfg: ExperimentConfig) -> bool:
     return True
 
 
-def _truncate_log(path: str, last_iteration: int) -> None:
-    with open(path, newline="") as f:
-        rows = list(csv.DictReader(f))
-        fields = rows[0].keys() if rows else None
-    if fields is None:
-        return
+def _truncate_log(path: str, last_iteration: int, fields) -> None:
+    """Keeps rows up to the checkpoint and rewrites the file with the current columns (new columns stay empty)."""
+    rows = []
+    if os.path.exists(path):
+        with open(path, newline="") as f:
+            rows = list(csv.DictReader(f))
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(fields))
+        writer = csv.DictWriter(f, fieldnames=list(fields), extrasaction="ignore")
         writer.writeheader()
         writer.writerows(r for r in rows if int(r["iteration"]) <= last_iteration)
 
@@ -130,7 +131,7 @@ def train(cfg: ExperimentConfig, run_dir: str, init_checkpoint: Optional[str] = 
         optimizer.load_state_dict(data["optimizer"])
         first, elapsed0 = int(data["iteration"]) + 1, float(data.get("elapsed", 0.0))
         exact = _restore_rng(data, cfg)
-        _truncate_log(log_path, first - 1)
+        _truncate_log(log_path, first - 1, log_fields(cfg))
         if verbose:
             print(f"[{cfg.name} s{cfg.seed}] resuming at iteration {first} "
                   f"({'exact RNG state' if exact else 'reseeded: checkpoint has no RNG state'})", flush=True)
@@ -159,7 +160,7 @@ def train(cfg: ExperimentConfig, run_dir: str, init_checkpoint: Optional[str] = 
                 row.update(compute_metrics(world.record, cfg.metrics))
             row.update(ppo_update(rollout, world, policy, critic, optimizer, cfg.ppo))
             if benchmark:  # after the update: the null run overwrites the world state
-                null = paired_null_metrics(world, rng_state, cfg, policy)
+                null = paired_null_metrics(world, rng_state, cfg, policy)["stronger"]
                 row.update({f"null_{k}": null[k] for k in NULL_KEYS[cfg.market.economy]})
                 row["stage"] = classify(row, null, cfg.metrics)
             row["seconds"] = round(time.time() - start, 1)

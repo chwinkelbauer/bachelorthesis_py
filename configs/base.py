@@ -51,6 +51,7 @@ class ProductionConfig:
     income_flow_range: Tuple[float, float] = (1.0, 2.0)   # mean units per round, sampled per agent and good
     income_period_range: Tuple[int, int] = (1, 4)         # income arrives as a lump every P_i rounds; (1, 1) = constant flow
     subsistence_surplus: float = 2.0                      # per raw good: income flow >= this x aggregate subsistence need
+    subsistence_buffer_rounds: float = 0.0                # starting reserve of the subsistence good, in rounds of gamma (0 = none)
     processing: bool = False                              # agents may turn inputs into higher-tier goods (Leontief)
     harvesting: bool = False                              # stage C: labour can harvest raw goods (only raw goods)
     access_goods_per_agent: int = 2                       # raw goods an agent can harvest (every raw good is accessible)

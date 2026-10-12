@@ -5,13 +5,19 @@ RandomPolicy (null model): uniformly random allowed offers, responses, labour an
 goods regardless of their use, so it produces no-use acceptances and pass-through by chance only.
 
 ZICPolicy (zero intelligence, constrained; Gode & Sunder 1993): random offers, but a standing offer is accepted only
-if it does not lower the agent's immediate utility. It never performs indirect exchange: the myopic-barter reference.
+if it does not lower the agent's immediate utility (myopic individual rationality).
 
 RandomTradeNull(policy): the policy's own labour and consumption, but random trading. Null model for production
 economies: it isolates trade behaviour while keeping production and consumption realistic.
 
+ZICTradeNull(policy): the policy's own labour and consumption, ZI-C trading. Second null for production economies.
+
 NoTradePolicy(policy): the policy's own labour and consumption, trading switched off (empty offers, rejection).
 Counterfactual for the gains from trade.
+
+Note: ZI-C does accept goods it has no use for whenever the trade costs it nothing (e.g. swapping one useless good
+for another) and may pass them on later by chance. It is therefore used as a second, stronger null (see
+analysis/money_metrics.py), not as a strict "no indirect exchange" reference.
 """
 
 import torch
@@ -90,6 +96,11 @@ class _Wrapper:
 class RandomTradeNull(_Wrapper):
     def decide(self, z_self, h_partner, tokens, context, dir_mask, resp_mask, actions=None, greedy=False) -> Decision:
         return RandomPolicy().decide(z_self, h_partner, tokens, context, dir_mask, resp_mask)
+
+
+class ZICTradeNull(_Wrapper):
+    def decide(self, z_self, h_partner, tokens, context, dir_mask, resp_mask, actions=None, greedy=False) -> Decision:
+        return ZICPolicy().decide(z_self, h_partner, tokens, context, dir_mask, resp_mask)
 
 
 class NoTradePolicy(_Wrapper):
