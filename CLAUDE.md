@@ -104,9 +104,8 @@ python -m scripts.report --run-dir results/A_s0                             # re
 - **Pilot B** (`results/pilot_B_s0_no_reserve`, stopped at iteration 86): collapsed into autarky.
   - 89% of agents needed others' goods to eat, held nothing at the start, and died by round ≈ 4 before trade could be learned.
   - Fix: the starting reserve plus the A→B warm start (approved).
-- **Running:** `results/A_s0`, the A retrain with the unified features (PID 18152, started 15:34, about 8 s/iteration). It is the base for the curriculum.
-  - Its training log still uses the random-only null (code loaded before the stronger-null change).
-  - **First step of the next session:** check whether it finished (`evaluation.json` exists). If not: `--resume`. Then re-evaluate and report it with the current code.
+- **A_s0** (unified features, the curriculum base) is **finished and evaluated**: efficiency 0.55, resale 0.43 vs. stronger null 0.21, costly resale 0.44, HHI 0.30 vs. 0.245, giving **indirect exchange, no money** (FRAMEWORK §12). Its training log uses the random-only null.
+- **Next:** queue item 2 (B warm-started from A_s0) and item 3 (B from scratch), in parallel.
 
 ## 6. Unattended / overnight protocol
 **Pre-approved without asking:**
@@ -137,7 +136,7 @@ python -m scripts.report --run-dir results/A_s0                             # re
 **End of the night:** write a concise summary (what ran, key numbers vs. nulls, stages, change points, failures, pending decisions) as the final message and into FRAMEWORK §12.
 
 ## 7. Experiment queue (ordered; tick items and add the result path)
-- [ ] 1. A_s0 finished? Then `scripts.evaluate` + `scripts.report` with the current code (stronger null). Otherwise `--resume` first.
+- [x] 1. A_s0 finished at 16:22 and was re-evaluated against the stronger null: indirect exchange, no money (FRAMEWORK §12). Logs are in `results/A_s0/train.log`; the old evaluation is kept as `evaluation_random_null_only.json`.
 - [ ] 2. **B warm from A:** `--preset B --seed 0 --init results/A_s0/checkpoint.pt --run-dir results/B_fromA_s0`
 - [ ] 3. **B from scratch** (curriculum control, run in parallel with 2): `--preset B --seed 0` → `results/B_s0`
 - [ ] 4. Gate check on 2 and 3. If both fail: stop the B/C chain and diagnose.

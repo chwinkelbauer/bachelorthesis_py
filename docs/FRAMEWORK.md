@@ -483,6 +483,23 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
 - **What did not emerge:** money. Concentration is +0.11 over the stronger null, below the +0.15 threshold. The most re-traded good has average spoilage and weight ranks (≈ 0.5), so there is no saleability selection.
 - **Theory check:** consistent with stage A offering only a transaction motive. A single "money" batch at iteration 290 was not confirmed on held-out economies (noise).
 
+**A, seed 0** (unified features, the curriculum base; `results/A_s0`, 300 iterations, held-out evaluation against the stronger null):
+
+| | learned greedy | learned stochastic | ZI-C | random |
+|---|---|---|---|---|
+| efficiency vs. Walras | 0.55 | 0.56 | 0.23 | 0.09 |
+| double-coincidence share | 0.72 | 0.60 | 0.15 | 0.10 |
+| ex-post IR violation | 0.021 | 0.037 | 0.28 | 0.37 |
+| resale rate (stronger null 0.21) | 0.43 | 0.42 | 0.21 | 0.12 |
+| costly resale rate (descriptive) | 0.43 | 0.44 | 0.21 | 0.11 |
+| money_hhi (stronger null 0.245) | 0.31 | 0.30 | 0.24 | 0.25 |
+| stage (4/4 batches) | indirect exchange | indirect exchange | barter | barter |
+
+- **Replication:** the pilot result is reproduced with the new feature layout: efficient barter plus purposeful indirect exchange, no money.
+- **Costly indirect exchange:** agents also *give up valued goods* to acquire no-use goods that they later resell (costly resale 0.44 vs. 0.21). That is clear evidence of purposeful indirect exchange.
+- **Change points:** resale and HHI at iterations 60 and 110; efficiency at 50, 100 and 150.
+- **Observation (not a claim):** an early transient. HHI peaked at 0.49 around iteration 30, and two training batches (iterations 40–50) were classified as "money", while trade per meeting was very low (≈ 0.12). Concentration then decayed as trading widened. Note that the training log of this run used the random-only null (code loaded before the stronger-null change); only the held-out evaluation uses the stronger null.
+
 **Pilot B, seed 0** (no reserve; `results/pilot_B_s0_no_reserve`, stopped at iteration 86): collapsed into autarky (trade rate 0.42 → 0.002, survival 9% → 14%). Diagnosis and fix in §11.
 
 ## 13. Changelog
@@ -538,4 +555,5 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
   - Added descriptive `costly_no_use_share` / `costly_resale_rate`. They are not used for classification, because a "costly only" criterion would exclude Kiyotaki–Wright indirect exchange (giving up a non-consumed production good). This is a deliberately narrower version of the approved fix; the user was informed.
   - Resume now rewrites metrics.csv with the current columns.
   - Added the results log (§12). 41 tests.
+- **2026-10-12:** A_s0 (unified features) finished and was re-evaluated against the stronger null (results log §12). The report legend now reads "paired null (as logged during training)", because older logs contain the random-only null.
 - **2026-10-12:** `CLAUDE.md` rewritten as the operating manual. It covers working rules, environment pitfalls, standard commands, the current state, the unattended/overnight protocol with gates, the experiment queue, pending decisions and key literature. The model specification stays in this document.

@@ -104,7 +104,7 @@ def plot(bench: pd.DataFrame, economy: str, title: str, path: str, change_points
     ax.set_xlabel("training iteration", color=INK_2, fontsize=9)
 
     handles = [Line2D([], [], color=LEARNED, linewidth=2, marker="o", markersize=3.5, label="learned policy"),
-               Line2D([], [], color=NULL, linewidth=2, linestyle=(0, (4, 3)), label="paired null (stronger of random, ZI-C)"),
+               Line2D([], [], color=NULL, linewidth=2, linestyle=(0, (4, 3)), label="paired null (as logged during training)"),
                Line2D([], [], color=INK_2, linewidth=1, linestyle=":", label="change point")]
     handles += [Patch(color=c, label=s.replace("_", " ")) for s, c in zip(STAGES, STAGE_COLORS)]
     fig.legend(handles=handles, loc="lower left", ncol=7, frameon=False, fontsize=8.5, labelcolor=INK_2,
