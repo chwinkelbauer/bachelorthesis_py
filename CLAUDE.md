@@ -64,7 +64,7 @@ preferences *invent* money, and which condition causes it?
     -WorkingDirectory (Get-Location).Path -RedirectStandardOutput "results\B_s0.log" `
     -RedirectStandardError "results\B_s0.err" -WindowStyle Hidden -PassThru
   ```
-- **The PC can suspend during unattended nights** even with sleep set to "never". This laptop uses **Modern Standby** (S0 low power idle), which starts when the display turns off and pauses desktop processes. On 2026-10-12/13, it suspended the runs repeatedly between 23:02 and 02:37 (Kernel-Power events 506/507). `ES_SYSTEM_REQUIRED` alone did not prevent this, so the helper now also requests `ES_DISPLAY_REQUIRED` and the display stays on. A closed lid still triggers standby.
+- **The PC can suspend during unattended nights** even with sleep set to "never". This laptop uses **Modern Standby** (S0 low power idle), which starts when the display turns off and pauses desktop processes. On 2026-10-12/13, it suspended the runs repeatedly between 23:02 and 02:37 (Kernel-Power events 506/507). `ES_SYSTEM_REQUIRED` alone did not prevent this, so the helper now also requests `ES_DISPLAY_REQUIRED` and the display stays on. A closed lid or the sleep button still triggers standby ("Reason SleepButton" in Kernel-Power event 566, as on 2026-10-13 from 03:26 to 08:59). Keep the lid open and do not press sleep during nights.
   - At the start of every night, run the keep-awake helper (no power settings are changed; it ends at -Hours or when `results/.stop_keep_awake` exists):
     `Start-Process powershell -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-File","scripts\keep_awake.ps1","-Hours","10" -WindowStyle Hidden`
   - A suspension shows up as one huge `seconds` jump in metrics.csv. It does not affect results.
@@ -109,7 +109,13 @@ python -m scripts.report --run-dir results/A_s0                             # re
   - 89% of agents needed others' goods to eat, held nothing at the start, and died by round ≈ 4 before trade could be learned.
   - Fix: the starting reserve plus the A→B warm start (approved).
 - **A_s0** (unified features, the curriculum base) is **finished and evaluated**: efficiency 0.55, resale 0.43 vs. stronger null 0.21, costly resale 0.44, HHI 0.30 vs. 0.245, giving **indirect exchange, no money** (FRAMEWORK §12). Its training log uses the random-only null.
-- **Next:** queue item 2 (B warm-started from A_s0) and item 3 (B from scratch), in parallel.
+- **Night 1 (2026-10-12/13, branch `night/2026-10-12`, not merged):** summary in FRAMEWORK §12.
+  - A_s1 done (indirect exchange, near the money threshold).
+  - B_s0 collapsed (autarky).
+  - B_fromA_s0 failed the gate (survival ≈ 0.2) and is being resumed to 300 as a trend check.
+  - A_s2 running.
+  - **Blocked on the user's decision in §8** (stage-B survival / intermediation).
+- **Next:** finish and evaluate A_s2 and B_fromA_s0; A_s3/A_s4; extend A_s1 to 600 (item 10). Do not start C/D before the §8 decision.
 
 ## 6. Unattended / overnight protocol
 **Pre-approved without asking:**

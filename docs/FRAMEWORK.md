@@ -474,6 +474,13 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
 - **The first stage-A pilot run (seed 0) used the pre-unification feature layout** (8/9/15/10 features). Its checkpoint does not load into the current model, so stage A must be re-trained for curriculum warm starts.
 
 ## 12. Results log
+
+### Night 1 summary (2026-10-12 22:55 → 2026-10-13 09:00, branch `night/2026-10-12`)
+- **Effective compute** was only about 4 h of the 10 h. The PC suspended repeatedly via Modern Standby (display off) until 02:37, when the keep-awake helper was fixed. From 03:26 to 08:59 it was in standby triggered by the sleep button or lid (Kernel-Power: "Reason SleepButton"), which software cannot prevent.
+- **Stage A replicates across seeds** (s0, s1; s2 is running): efficient, mostly mutually beneficial barter (efficiency vs. Walras ≈ 0.53–0.55 vs. ZI-C 0.23) plus purposeful, partly *costly* indirect exchange (resale ≈ 0.38–0.43 vs. stronger null 0.21). **No robust money yet.** HHI is +0.06 (s0) and +0.12/+0.14 (s1) over the null, against +0.15 required. Seed 1 shows a rising late trend, so a run-length extension is queued.
+- **Stage B is blocked.** From scratch it collapses into autarky. Warm-started from A, it keeps trading and gains about 23% welfare from trade, but survival is only about 20% (gate: 50%).
+- **Diagnosis (§11):** survival requires intermediation along network chains. Even a hand-coded policy reaches only 22%; raw-only subsistence goods (55%) and a complete network (63%) help most.
+- **Decision needed:** CLAUDE.md §8 (recommended: mortality curriculum + raw-only subsistence goods). C/D are blocked until then.
 **Pilot A, seed 0** (300 iterations, pre-unification features; `results/pilot_A_s0_old_features`, held-out evaluation over 4 batches × 64 economies):
 
 | | learned greedy | learned stochastic | ZI-C | random |
@@ -607,3 +614,4 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
   - The keep-awake helper now also requests `ES_DISPLAY_REQUIRED`: the laptop uses Modern Standby, which starts when the display turns off (it suspended the runs repeatedly between 23:02 and 02:37).
   - A_s2 started.
 - **2026-10-13:** A_s1 finished and evaluated (results log §12): indirect exchange, HHI near the money threshold, with a rising late trend. B_fromA_s0 resumed from iteration 151 (exact RNG state).
+- **2026-10-13:** Night 1 summary added (§12). The PC was in sleep-button/lid standby from 03:26 to 08:59. A_s2 and the resumed B_fromA_s0 continue in the morning.
