@@ -507,6 +507,20 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
 - **Change points:** resale and HHI at iterations 60 and 110; efficiency at 50, 100 and 150.
 - **Observation (not a claim):** an early transient. HHI peaked at 0.49 around iteration 30, and two training batches (iterations 40–50) were classified as "money", while trade per meeting was very low (≈ 0.12). Concentration then decayed as trading widened. Note that the training log of this run used the random-only null (code loaded before the stronger-null change); only the held-out evaluation uses the stronger null.
 
+**A, seed 1** (`results/A_s1`, 300 iterations; training log and evaluation both use the stronger null):
+
+| | learned greedy | learned stochastic | ZI-C | random |
+|---|---|---|---|---|
+| efficiency vs. Walras | 0.54 | 0.53 | 0.23 | 0.09 |
+| double-coincidence share | 0.71 | 0.62 | 0.15 | 0.10 |
+| resale rate (stronger null 0.21) | 0.39 | 0.38 | 0.21 | 0.12 |
+| costly resale rate | 0.38 | 0.36 | 0.21 | 0.11 |
+| money_hhi (stronger null 0.245; money ≥ 0.395) | 0.36 | 0.38 | 0.24 | 0.25 |
+| stage | indirect exchange 4/4 | indirect exchange 3/4, money 1/4 | barter | barter |
+
+- **Replicates seed 0** (efficient barter + purposeful indirect exchange), but sits **closer to the money threshold** (HHI +0.12/+0.14 vs. +0.06 in seed 0).
+- **Late convergence trend:** after iteration ≈ 150, HHI keeps rising (0.28 → 0.42; change points at 60 and 250) while the no-use acceptance share falls (0.30 → 0.25). Agents become more selective *and* concentrate their indirect exchange on one good. The 300-iteration budget may cut off an ongoing convergence toward money, so A_s1 is extended to 600 iterations as a check.
+
 **B, seed 0, warm-started from A_s0** (`results/B_fromA_s0`, with reserve; **gate failed at iteration 150**: survival 0.23 < 0.5; held-out evaluation at iteration 150):
 
 | | learned greedy | learned stochastic | no-trade counterfactual | random-trade null |
@@ -592,3 +606,4 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
   - B_fromA_s0 failed the gate at iteration 150 (survival 0.23); it was evaluated, and its results are logged in §12. It will be resumed to 300 to test the trend.
   - The keep-awake helper now also requests `ES_DISPLAY_REQUIRED`: the laptop uses Modern Standby, which starts when the display turns off (it suspended the runs repeatedly between 23:02 and 02:37).
   - A_s2 started.
+- **2026-10-13:** A_s1 finished and evaluated (results log §12): indirect exchange, HHI near the money threshold, with a rising late trend. B_fromA_s0 resumed from iteration 151 (exact RNG state).
