@@ -64,7 +64,11 @@ preferences *invent* money, and which condition causes it?
     -WorkingDirectory (Get-Location).Path -RedirectStandardOutput "results\B_s0.log" `
     -RedirectStandardError "results\B_s0.err" -WindowStyle Hidden -PassThru
   ```
-- **The PC can suspend during unattended nights** even with sleep set to "never". This laptop uses **Modern Standby** (S0 low power idle), which starts when the display turns off and pauses desktop processes. On 2026-10-12/13, it suspended the runs repeatedly between 23:02 and 02:37 (Kernel-Power events 506/507). `ES_SYSTEM_REQUIRED` alone did not prevent this, so the helper now also requests `ES_DISPLAY_REQUIRED` and the display stays on. A closed lid or the sleep button still triggers standby ("Reason SleepButton" in Kernel-Power event 566, as on 2026-10-13 from 03:26 to 08:59). Keep the lid open and do not press sleep during nights.
+- **The PC can suspend during unattended nights** even with sleep set to "never". This laptop uses **Modern Standby** (S0 low power idle), which starts when the display turns off and pauses desktop processes. On 2026-10-12/13, it suspended the runs repeatedly between 23:02 and 02:37 (Kernel-Power events 506/507). `ES_SYSTEM_REQUIRED` alone did not prevent this, so the helper now also requests `ES_DISPLAY_REQUIRED` and the display stays on.
+  - **Even this was not enough on 2026-10-13.** The PC had woken itself at 02:37 without user input. At 03:26, two seconds after Windows' automatic maintenance (drive optimisation) finished, it went back to standby until 08:59.
+  - Note that Kernel-Power event 566 logs "Reason SleepButton" for *every* Modern Standby entry on this laptop, so it does **not** mean that the lid or a button was used.
+  - The power plan turns the screen off after 30 min on AC (sleep: never).
+  - **Reliable fix (user setting, do not change it yourself):** set "Turn off my screen after" (plugged in) to *Never* before nights. Remind the user if a night is planned.
   - At the start of every night, run the keep-awake helper (no power settings are changed; it ends at -Hours or when `results/.stop_keep_awake` exists):
     `Start-Process powershell -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-File","scripts\keep_awake.ps1","-Hours","10" -WindowStyle Hidden`
   - A suspension shows up as one huge `seconds` jump in metrics.csv. It does not affect results.
