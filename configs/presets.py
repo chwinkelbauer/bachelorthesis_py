@@ -6,6 +6,14 @@ from typing import Callable, Dict
 
 from configs.base import (
     ExperimentConfig, NetworkConfig, MarketConfig, PreferenceConfig, ProductionConfig, PPOConfig, LedgerConfig,
+    GoodsConfig, CurriculumConfig,
+)
+
+# Learning sessions of stages B-D: technology (producible tiers) is unlocked step by step and the death threshold is
+# ramped down to its final value; from iteration 151 on agents train in the full economy.
+PRODUCTION_SESSIONS = (
+    {"until": 75, "set": ["production.max_tier=0", "market.death_after=20"]},
+    {"until": 150, "set": ["production.max_tier=1", "market.death_after=10"]},
 )
 
 
@@ -27,16 +35,24 @@ def stage_a_full_info() -> ExperimentConfig:
 def stage_b() -> ExperimentConfig:
     """
     Stage B: production economy with lumpy raw-goods income (every P_i in {1..4} rounds), processing along the recipe
-    DAG, learned consumption, Stone-Geary subsistence on one basic good and death after 5 deprived rounds. Agents start
-    with a reserve of their subsistence good for 10 rounds.
+    DAG, learned consumption, Stone-Geary subsistence on one raw good and death after 5 deprived rounds. Agents start
+    with a reserve of their subsistence good for 10 rounds. Every raw good is consumable; utility weights are scaled by
+    tier: agent-specific log-normal multipliers with means (0.2, 1, 2) and log-spreads (0.25, 0.75, 1.0), so raw goods
+    keep agents alive while processed goods are high-utility, high-variance goods; each agent values 2-5 goods
+    (min_processed_valued is available but off).
+    Learning sessions (PRODUCTION_SESSIONS) unlock technology and ramp the death threshold.
     Rollouts of 24 rounds are truncated and bootstrapped (discount 0.97).
     """
     return ExperimentConfig(
         name="B", stage="B",
-        preferences=PreferenceConfig(subsistence=True, subsistence_range=(0.2, 0.5)),
+        goods=GoodsConfig(raw_consumable_prob=1.0),
+        preferences=PreferenceConfig(subsistence=True, subsistence_range=(0.2, 0.5), subsistence_max_tier=0,
+                                     goods_valued_range=(2, 5), tier_weights=(0.2, 1.0, 2.0),
+                                     tier_weight_sigma=(0.25, 0.75, 1.0)),
         production=ProductionConfig(income=True, processing=True, income_period_range=(1, 4),
                                     subsistence_buffer_rounds=10.0),
         market=MarketConfig(economy="production", rounds=24),
+        curriculum=CurriculumConfig(sessions=PRODUCTION_SESSIONS),
         ppo=PPOConfig(worlds=32, gamma=0.97),
     )
 
@@ -93,6 +109,9 @@ def _shrink(cfg: ExperimentConfig) -> ExperimentConfig:
     cfg.model.attn_heads = 2
     cfg.model.gnn_layers = 1
     cfg.model.transformer_layers = 1
+    # one iteration per learning session, then one on the full economy
+    cfg.curriculum.sessions = tuple({**s, "until": k + 1} for k, s in enumerate(cfg.curriculum.sessions))
+    cfg.ppo.iterations = len(cfg.curriculum.sessions) + 1 if cfg.curriculum.sessions else cfg.ppo.iterations
     return cfg
 
 

@@ -33,6 +33,10 @@ class PreferenceConfig:
     subsistence_goods: int = 1                            # how many valued goods carry a subsistence level
     subsistence_range: Tuple[float, float] = (0.5, 1.5)   # gamma per round (consumption flow) from stage B on
     subsistence_max_tier: int = 1                         # basic needs: subsistence goods are drawn from tiers <= this
+    goods_valued_range: Tuple[int, int] = (0, 0)          # (lo, hi): each agent values n ~ U{lo..hi} goods; (0, 0) = goods_valued
+    tier_weights: Tuple[float, ...] = ()                  # mean utility weight multiplier per tier (last entry for higher tiers); () = off
+    tier_weight_sigma: Tuple[float, ...] = ()             # log-normal spread of that multiplier per tier, per agent and good; () = fixed
+    min_processed_valued: int = 0                         # with subsistence: at least this many valued goods are processed (tier >= 1)
 
 
 @dataclass
@@ -56,6 +60,7 @@ class ProductionConfig:
     harvesting: bool = False                              # stage C: labour can harvest raw goods (only raw goods)
     access_goods_per_agent: int = 2                       # raw goods an agent can harvest (every raw good is accessible)
     skill_sigma: float = 0.5                              # skill_ir ~ LogNormal(0, sigma)
+    max_tier: int = -1                                    # technology level: goods above this tier cannot be processed (-1 = all)
 
 
 @dataclass
@@ -82,6 +87,17 @@ class MarketConfig:
     full_information: bool = False                        # partners' preferences observable
     spoilage: bool = True
     death_after: int = 5                                  # B+: consecutive rounds below subsistence until death
+    death_penalty: float = 0.0                            # B+: one-off reward -p in the round an agent dies (0 = off)
+
+
+@dataclass
+class CurriculumConfig:
+    """
+    Learning sessions within one run. Each session is {"until": iteration, "set": [dotted overrides]} and applies to the
+    iterations after the previous session up to and including `until`. Later iterations use the configuration itself
+    (the full economy), which is also the only one ever evaluated. () = no sessions.
+    """
+    sessions: Tuple[Dict[str, Any], ...] = ()
 
 
 @dataclass
@@ -128,6 +144,7 @@ class ExperimentConfig:
     endowments: EndowmentConfig = field(default_factory=EndowmentConfig)
     production: ProductionConfig = field(default_factory=ProductionConfig)
     ledger: LedgerConfig = field(default_factory=LedgerConfig)
+    curriculum: CurriculumConfig = field(default_factory=CurriculumConfig)
     network: NetworkConfig = field(default_factory=NetworkConfig)
     market: MarketConfig = field(default_factory=MarketConfig)
     model: ModelConfig = field(default_factory=ModelConfig)

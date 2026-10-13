@@ -8,8 +8,13 @@ A run can be resumed from its checkpoint (resume=True): weights, optimizer, iter
 states are restored and metrics.csv is continued (rows after the checkpoint are dropped). With RNG states in the
 checkpoint the resumed run is bit-identical to an uninterrupted one; checkpoints without them (older runs) are resumed
 with a deterministic reseed (seed + iteration).
+
+Learning sessions (cfg.curriculum.sessions): every iteration is trained on the configuration of its session (the base
+configuration with the session's overrides); after the last session the base configuration (the full economy) is used.
+The world is rebuilt at session boundaries, which does not consume random numbers, so resumes stay bit-identical.
 """
 
+import copy
 import csv
 import json
 import os
@@ -22,14 +27,14 @@ import torch
 
 from agents.policy import PolicyNet, CriticNet
 from analysis.money_metrics import compute_metrics, classify
-from configs.base import ExperimentConfig
+from configs.base import ExperimentConfig, apply_overrides
 from economy.world import EconomyBatch
 from learning.ppo import ppo_update
 from learning.rollout import collect_rollout
 from learning.seeding import set_seed
 from learning.evaluate import paired_null_metrics
 
-TRAIN_FIELDS = ("iteration", "seconds", "mean_episode_reward", "trade_rate")
+TRAIN_FIELDS = ("iteration", "seconds", "mean_episode_reward", "trade_rate", "session")
 LOSS_FIELDS = ("policy_loss", "value_loss", "entropy", "approx_kl", "clip_frac")
 EXCHANGE_FIELDS = (
     "no_use_share", "resale_rate", "money_hhi", "costly_no_use_share", "costly_resale_rate",
@@ -61,7 +66,30 @@ def _progress_line(cfg: ExperimentConfig, row: Dict[str, object]) -> str:
     else:
         body = (f" | no-use {row['no_use_share']:.3f} | resale {row['resale_rate']:.2f} (null {row['null_resale_rate']:.2f})"
                 f" | hhi {row['money_hhi']:.2f} (null {row['null_money_hhi']:.2f}) | eff(W) {row['efficiency_vs_walras']:.2f}")
-    return head + body + f" | {row['stage']} | {row['seconds']}s"
+    session = f" | S{row['session']}" if cfg.curriculum.sessions else ""
+    return head + body + f" | {row['stage']}{session} | {row['seconds']}s"
+
+
+def validate_sessions(cfg: ExperimentConfig) -> None:
+    """Session ends must increase and leave at least one iteration on the full economy."""
+    previous = 0
+    for s in cfg.curriculum.sessions:
+        until = int(s["until"])
+        if until <= previous:
+            raise ValueError(f"Session ends must be strictly increasing, got {until} after {previous}")
+        apply_overrides(copy.deepcopy(cfg), s.get("set", []))   # fails early on unknown keys
+        previous = until
+    if cfg.curriculum.sessions and previous >= cfg.ppo.iterations:
+        raise ValueError(f"The last session ends at {previous}, so the full economy is never trained "
+                         f"({cfg.ppo.iterations} iterations)")
+
+
+def session_config(cfg: ExperimentConfig, iteration: int):
+    """(session number starting at 1, configuration) for an iteration; the full economy is the last session."""
+    for k, s in enumerate(cfg.curriculum.sessions):
+        if iteration <= int(s["until"]):
+            return k + 1, apply_overrides(copy.deepcopy(cfg), s.get("set", []))
+    return len(cfg.curriculum.sessions) + 1, cfg
 
 
 def build_models(cfg: ExperimentConfig):
@@ -143,24 +171,32 @@ def train(cfg: ExperimentConfig, run_dir: str, init_checkpoint: Optional[str] = 
             policy.load_state_dict(p_init.state_dict())
             critic.load_state_dict(c_init.state_dict())
 
-    world = EconomyBatch(cfg, cfg.ppo.worlds)
+    validate_sessions(cfg)
+    world, session = None, None
     with open(log_path, "a" if resume else "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=log_fields(cfg), extrasaction="ignore")
         if not resume:
             writer.writeheader()
         start = time.time() - elapsed0
         for it in range(first, cfg.ppo.iterations + 1):
+            k, cfg_it = session_config(cfg, it)
+            if k != session:   # new learning session: rebuild the world with the session's configuration
+                world, session = EconomyBatch(cfg_it, cfg_it.ppo.worlds), k
+                if verbose and cfg.curriculum.sessions:
+                    print(f"[{cfg.name} s{cfg.seed}] session {k} from iteration {it}: "
+                          + (", ".join(cfg.curriculum.sessions[k - 1].get("set", [])) if k <= len(cfg.curriculum.sessions)
+                             else "full economy"), flush=True)
             rng_state = torch.get_rng_state()
             rollout = collect_rollout(world, policy)
-            row: Dict[str, object] = {"iteration": it}
+            row: Dict[str, object] = {"iteration": it, "session": k}
             row["mean_episode_reward"] = float(rollout.rewards.sum(0).mean())
             row["trade_rate"] = len(world.record.trades()["b"]) / max(world.record.meetings, 1)
             benchmark = it % cfg.ppo.benchmark_every == 0 or it == 1 or it == cfg.ppo.iterations
             if benchmark:
                 row.update(compute_metrics(world.record, cfg.metrics))
-            row.update(ppo_update(rollout, world, policy, critic, optimizer, cfg.ppo))
+            row.update(ppo_update(rollout, world, policy, critic, optimizer, cfg_it.ppo))
             if benchmark:  # after the update: the null run overwrites the world state
-                null = paired_null_metrics(world, rng_state, cfg, policy)["stronger"]
+                null = paired_null_metrics(world, rng_state, cfg_it, policy)["stronger"]
                 row.update({f"null_{k}": null[k] for k in NULL_KEYS[cfg.market.economy]})
                 row["stage"] = classify(row, null, cfg.metrics)
             row["seconds"] = round(time.time() - start, 1)

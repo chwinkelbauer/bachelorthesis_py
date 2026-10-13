@@ -4,6 +4,7 @@ Results report for one run: training curves (learned vs. paired null), stage tim
     python -m scripts.report --run-dir results/A_s0          # -> results/A_s0/report.png + printed summary
 
 Reads metrics.csv (benchmark iterations only) and, if present, evaluation.json. Works on interrupted runs.
+Learning-session starts are drawn as solid grey lines: jumps there come from the curriculum, not from emergence.
 """
 
 import argparse
@@ -72,7 +73,7 @@ def summarize(bench: pd.DataFrame, economy: str) -> dict:
     return out
 
 
-def plot(bench: pd.DataFrame, economy: str, title: str, path: str, change_points: dict) -> None:
+def plot(bench: pd.DataFrame, economy: str, title: str, path: str, change_points: dict, session_starts=()) -> None:
     panels = [p for p in PANELS[economy] if p[0] in bench and bench[p[0]].notna().any()]
     ncols = 2
     nrows = (len(panels) + 1) // ncols
@@ -91,6 +92,8 @@ def plot(bench: pd.DataFrame, economy: str, title: str, path: str, change_points
             ax.plot(x, bench[null_key], color=NULL, linewidth=2, linestyle=(0, (4, 3)))
         for t in change_points.get(key, []):
             ax.axvline(t, color=INK_2, linewidth=1, linestyle=":")
+        for t in session_starts:
+            ax.axvline(t, color=INK_2, linewidth=1.6, alpha=0.45)
     # stage timeline (ordinal ramp), one cell per benchmark iteration
     ax = fig.add_subplot(grid[nrows, :])
     _style(ax, "Stage (classified against the paired null)")
@@ -106,8 +109,10 @@ def plot(bench: pd.DataFrame, economy: str, title: str, path: str, change_points
     handles = [Line2D([], [], color=LEARNED, linewidth=2, marker="o", markersize=3.5, label="learned policy"),
                Line2D([], [], color=NULL, linewidth=2, linestyle=(0, (4, 3)), label="paired null (as logged during training)"),
                Line2D([], [], color=INK_2, linewidth=1, linestyle=":", label="change point")]
+    if session_starts:
+        handles.append(Line2D([], [], color=INK_2, linewidth=1.6, alpha=0.45, label="learning-session start"))
     handles += [Patch(color=c, label=s.replace("_", " ")) for s, c in zip(STAGES, STAGE_COLORS)]
-    fig.legend(handles=handles, loc="lower left", ncol=7, frameon=False, fontsize=8.5, labelcolor=INK_2,
+    fig.legend(handles=handles, loc="lower left", ncol=len(handles), frameon=False, fontsize=8.5, labelcolor=INK_2,
                bbox_to_anchor=(0.11, 0.955))
     fig.suptitle(title, x=0.12, y=1.0, ha="left", fontsize=12, color=INK)
     fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=SURFACE)
@@ -127,7 +132,9 @@ def main() -> None:
     summary = summarize(bench, economy)
     title = f"Run {cfg['name']} (seed {cfg['seed']}, {economy} economy), up to iteration {summary['last_iteration']}"
     path = os.path.join(args.run_dir, "report.png")
-    plot(bench, economy, title, path, summary["change_points"])
+    sessions = cfg.get("curriculum", {}).get("sessions", [])
+    summary["session_starts"] = [int(s["until"]) + 1 for s in sessions]
+    plot(bench, economy, title, path, summary["change_points"], summary["session_starts"])
 
     evaluation = os.path.join(args.run_dir, "evaluation.json")
     if os.path.exists(evaluation):

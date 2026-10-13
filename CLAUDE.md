@@ -39,7 +39,7 @@ preferences *invent* money, and which condition causes it?
 4. **Organisation:**
    - Rewrite in place: no new parallel folders, and no copies of modules.
    - Keep `configs/ economy/ agents/ learning/ analysis/ scripts/ tests/ docs/`.
-5. **Tests:** `python -m unittest discover -s tests -t .` must pass after every change (41 tests at the time of writing). Add tests for new behaviour.
+5. **Tests:** `python -m unittest discover -s tests -t .` must pass after every change (50 tests at the time of writing). Add tests for new behaviour.
 6. **Scientific integrity:**
    - No good may be hard-coded or rewarded as money, and no BC/shaping toward trade or money.
    - Metrics stay symmetric over goods and null-referenced.
@@ -64,14 +64,14 @@ preferences *invent* money, and which condition causes it?
     -WorkingDirectory (Get-Location).Path -RedirectStandardOutput "results\B_s0.log" `
     -RedirectStandardError "results\B_s0.err" -WindowStyle Hidden -PassThru
   ```
-- **The PC can suspend during unattended nights** even with sleep set to "never". This laptop uses **Modern Standby** (S0 low power idle), which starts when the display turns off and pauses desktop processes. On 2026-10-12/13, it suspended the runs repeatedly between 23:02 and 02:37 (Kernel-Power events 506/507). `ES_SYSTEM_REQUIRED` alone did not prevent this, so the helper now also requests `ES_DISPLAY_REQUIRED` and the display stays on.
+- **The PC can suspend during unattended nights** even with sleep set to "never". This laptop uses **Modern Standby** (S0 low power idle), which starts when the display turns off and pauses desktop processes. On 2026-10-12/13, it suspended the runs repeatedly between 23:02 and 02:37 (Kernel-Power events 506/507). A keep-awake request with `ES_SYSTEM_REQUIRED` alone did not prevent this; adding `ES_DISPLAY_REQUIRED` (display stays on) helped.
   - **Even this was not enough on 2026-10-13.** The PC had woken itself at 02:37 without user input. At 03:26, two seconds after Windows' automatic maintenance (drive optimisation) finished, it went back to standby until 08:59.
   - Note that Kernel-Power event 566 logs "Reason SleepButton" for *every* Modern Standby entry on this laptop, so it does **not** mean that the lid or a button was used.
   - The power plan turns the screen off after 30 min on AC (sleep: never).
-  - **Reliable fix (user setting, do not change it yourself):** set "Turn off my screen after" (plugged in) to *Never* before nights. Remind the user if a night is planned.
-  - At the start of every night, run the keep-awake helper (no power settings are changed; it ends at -Hours or when `results/.stop_keep_awake` exists):
-    `Start-Process powershell -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-File","scripts\keep_awake.ps1","-Hours","10" -WindowStyle Hidden`
-  - A suspension shows up as one huge `seconds` jump in metrics.csv. It does not affect results.
+  - **The user wants a dark screen at night**, so the screen timeout stays as it is. Instead, use the system tool **Dark Awake** (outside the repo): `C:\Users\cwink\Tools\dark-awake.ps1`, started with the hotkey **Ctrl+Alt+D** (Start-menu shortcut "Dark Awake"). It blacks out the screen (brightness 0 + black overlay) while the display stays logically on, so Modern Standby cannot suspend the runs. It runs until any key or click, then restores the brightness. Only one instance runs at a time.
+    - At the start of a night, ask or remind the user to press **Ctrl+Alt+D** before leaving.
+    - If they did not, the session may start it itself (this blacks out the screen): `Start-Process powershell -ArgumentList "-NoProfile","-WindowStyle","Hidden","-ExecutionPolicy","Bypass","-File","C:\Users\cwink\Tools\dark-awake.ps1"`
+  - At every wake-up, check `Get-WinEvent` (System log, Kernel-Power events 506/507) since the last check, so a standby is noticed immediately.
 - **Watching runs:** use Monitor (`tail -F log | grep --line-buffered`, which expires after at most 30 min; re-arm) or a background `until` loop. Check for `Traceback` in the `.err` file. Python processes: `tasklist //FI "IMAGENAME eq python.exe"`.
 - **A running process keeps the code it loaded at start.** Editing files does not affect it. After code changes to metrics, re-run `scripts.evaluate` and `scripts.report` on finished runs.
 - **Speed (12 threads):**
@@ -99,27 +99,30 @@ python -m scripts.train --resume --run-dir results/B_fromA_s0               # co
 python -m scripts.evaluate --run-dir results/A_s0                           # held-out eval vs. nulls + change points
 python -m scripts.evaluate --run-dir results/D_s0 --set ledger.switch_round=12 --out evaluation_switch_off.json
 python -m scripts.report --run-dir results/A_s0                             # report.png + JSON summary (look at the PNG!)
+python -m scripts.summarize --out results/summary.md                        # all runs in one table + IQM/CI across seeds
+python -m scripts.train --preset B --seed 0 --set curriculum.sessions=[]    # control: no learning sessions
 ```
 **Presets:** `A`, `A_complete`, `A_full_info`, `B`, `B_constant_income`, `C`, `C_no_specialization`, `D`, and `quick`, `quick_B`, `quick_C`, `quick_D` (smoke tests).
 
-## 5. Current state (2026-10-12, 15:45)
-- **Implemented:** stages A–D, stronger-null classification, descriptive costly-indirect-exchange metrics, the subsistence reserve (presets B–D: 10 rounds), resumable training, the report script. 41 tests pass.
-- **Committed:** the rewrite (`5ee669d`, by the user) and the reserve / stronger-null / report / CLAUDE.md changes (committed to main on 2026-10-12, 15:50).
-- **Pilot A** (`results/pilot_A_s0_old_features`, old features, finished):
-  - efficient barter (efficiency vs. Walras 0.54; ZI-C 0.23) plus purposeful indirect exchange (resale 0.40 vs. stronger null 0.21)
-  - **no money** (HHI 0.36 vs. 0.245 + 0.15 required)
-  - change point at iteration ≈ 50
-- **Pilot B** (`results/pilot_B_s0_no_reserve`, stopped at iteration 86): collapsed into autarky.
-  - 89% of agents needed others' goods to eat, held nothing at the start, and died by round ≈ 4 before trade could be learned.
-  - Fix: the starting reserve plus the A→B warm start (approved).
-- **A_s0** (unified features, the curriculum base) is **finished and evaluated**: efficiency 0.55, resale 0.43 vs. stronger null 0.21, costly resale 0.44, HHI 0.30 vs. 0.245, giving **indirect exchange, no money** (FRAMEWORK §12). Its training log uses the random-only null.
-- **Night 1 (2026-10-12/13, branch `night/2026-10-12`, not merged):** summary in FRAMEWORK §12.
-  - A_s1 done (indirect exchange, near the money threshold).
-  - B_s0 collapsed (autarky).
-  - B_fromA_s0 failed the gate (survival ≈ 0.2) and is being resumed to 300 as a trend check.
-  - A_s2 running.
-  - **Blocked on the user's decision in §8** (stage-B survival / intermediation).
-- **Next:** finish and evaluate A_s2 and B_fromA_s0; A_s3/A_s4; extend A_s1 to 600 (item 10). Do not start C/D before the §8 decision.
+## 5. Current state (2026-10-13, afternoon): nothing is running
+- **Implemented:** stages A–D (code and tests; 50 tests pass), stronger-null classification, costly-indirect-exchange indicators, the subsistence reserve (presets B–D: 10 rounds), resumable training, `scripts/report.py`, `scripts/summarize.py`.
+- **New (2026-10-13, approved stage-B redesign, not yet trained):**
+  - **Learning sessions** (`curriculum.sessions`, presets B–D): S1 iterations 1–75 raw goods only and death after 20; S2 76–150 tiers ≤ 1 and death after 10; S3 the full economy. Only the full economy is evaluated.
+  - **Basic needs vs. higher wants:** subsistence only from raw goods (all raw goods consumable); 2–5 valued goods per agent; random log-normal tier multipliers (means 0.2/1/2, log-spreads 0.25/0.75/1.0). Calibration check in FRAMEWORK §3.2. `preferences.min_processed_valued` (≥ k processed valued goods) stays in the code but is **off** in the presets (user decision).
+  - **Optional death penalty** `market.death_penalty` (one-off −p at death, default 0), to be A/B-tested with p = 0.5 (user decision).
+  - All new options default to off; old configurations sample bit-identically.
+- **Git:** `main` up to `ef6a91a` (night branch merged). **Do not commit:** the user commits everything to main themselves (said 2026-10-13). Today's changes are uncommitted.
+- **Results** (details in FRAMEWORK §12 "Current status"; table: `python -m scripts.summarize`):
+  - **Stage A** (seeds 0–2 finished, seed 3 stopped at checkpoint 100):
+    - efficient barter + purposeful indirect exchange: efficiency 0.54 vs. ZI-C 0.23; resale 0.39 vs. stronger null 0.21
+    - **no stable money:** HHI excess +0.06 to +0.14, below +0.15; money conventions appear transiently late in training
+  - **Stage B:**
+    - from scratch, it collapses into autarky
+    - warm-started from A: barter with +32% welfare from trade, but survival is only 0.25 (gate 0.5), rising slowly
+    - diagnosis: survival requires intermediation (FRAMEWORK §11)
+  - **C and D:** not run.
+- **Next:** train B with sessions, warm-started from A (seed 0), once without and once with death penalty 0.5, in parallel (§7 item 4b). Start runs only when the user says so.
+- **Night runs:** the user starts the system tool **Dark Awake** (Ctrl+Alt+D) before leaving (§3).
 
 ## 6. Unattended / overnight protocol
 **Pre-approved without asking:**
@@ -151,10 +154,14 @@ python -m scripts.report --run-dir results/A_s0                             # re
 
 ## 7. Experiment queue (ordered; tick items and add the result path)
 - [x] 1. A_s0 finished at 16:22 and was re-evaluated against the stronger null: indirect exchange, no money (FRAMEWORK §12). Logs are in `results/A_s0/train.log`; the old evaluation is kept as `evaluation_random_null_only.json`.
-- [x] 2. **B warm from A**: `results/B_fromA_s0`. Gate failed at iteration 150 (survival 0.23). Evaluated: barter; +23% welfare from trade vs. no trade; survival still rising. It is resumed to 300 as a trend check for option (c) in §8.
+- [x] 2. **B warm from A**: `results/B_fromA_s0`. Gate failed at iteration 150 (survival 0.23). Resumed and finished at 300: barter; +32% flow utility vs. no trade; survival 0.25, rising only ~+0.05 per 100 iterations.
 - [x] 3. **B from scratch**: `results/B_s0`. Stopped at iteration 69 after failing the gate (autarky collapse, survival 10–15%). Diagnosis in §8 / FRAMEWORK §11.
 - [x] 4. Gate check: **both failed**. The B/C/D chain (items 5, 6, 8 and the B/C controls in 7) is **blocked until the user decides on the stage-B proposal in §8**.
-- [ ] 5. **C warm from B:** `--preset C --seed 0 --init results/B_fromA_s0/checkpoint.pt --run-dir results/C_fromB_s0`
+- [ ] 4b. *(new B design, 2026-10-13)* **B with learning sessions, warm from A**, two runs in parallel:
+  - `--preset B --seed 0 --init results/A_s0/checkpoint.pt --run-dir results/B2_fromA_s0` (no death penalty)
+  - the same with `--set market.death_penalty=0.5 --run-dir results/B2_penalty_fromA_s0`
+  - Then the control without sessions (`--set curriculum.sessions=[]`, with the better penalty setting): `results/B2_nosessions_fromA_s0`. Gates at iteration 150 (end of session 2) and at the end; judge survival in session 3 only (sessions 1–2 have a softer death rule). Old B runs (`B_fromA_s0`, `B_s0`) used the old design. Items 5–8 use the new B checkpoint.
+- [ ] 5. **C warm from B:** `--preset C --seed 0 --init results/B2_fromA_s0/checkpoint.pt --run-dir results/C_fromB_s0`
 - [ ] 6. **C from scratch:** `--preset C --seed 0` → `results/C_s0`
 - [ ] 7. **Controls:**
   - `B_constant_income` warm from A → `results/B_constant_income_fromA_s0` (F5b)
@@ -162,12 +169,12 @@ python -m scripts.report --run-dir results/A_s0                             # re
 - [ ] 8. **D warm from C:** `--preset D --seed 0 --init results/C_fromB_s0/checkpoint.pt --run-dir results/D_fromC_s0`. Then the disturbance evaluations:
   - D with `--set ledger.switch_round=12 --out evaluation_switch_off.json`
   - C_fromB with `--set ledger.enabled=true ledger.switch_round=12 --out evaluation_switch_on.json`
-- [ ] 9. **More seeds for statistics** (A seeds 1–4, then B_fromA seeds 1–2), as time allows. *Progress:* A_s1 and A_s2 done (indirect exchange; transient money episodes; cross-seed table in FRAMEWORK §12); A_s3 running (started 09:37); A_s4 next. The B_fromA seeds are blocked (§8).
+- [ ] 9. **More seeds for statistics** (A seeds 1–4, then B_fromA seeds 1–2), as time allows. *Progress:* A_s1 and A_s2 done (cross-seed table in FRAMEWORK §12). **A_s3 stopped at its iteration-100 checkpoint:** continue it with `--resume --run-dir results/A_s3` (move its partial logs aside first; they are kept as `train_part1.*`). A_s4 not started. The B_fromA seeds are blocked (§8).
 - [ ] 10. *(added in night 1, run-length check, no design change)* Extend A_s1 to 600 iterations (`--resume --iterations 600 --run-dir results/A_s1`), because its HHI was still rising at iteration 300. If it crosses the threshold, also extend A_s0. Aggregate with `analysis/stats.py` (IQM + bootstrap CI).
 
 ## 8. Pending decisions (for the user; add proposals here)
 - *(decided 2026-10-12)* Commit policy for unattended work: work branch `night/<date>`, no push (§2.8).
-- **[NEW 2026-10-13, needs decision] Stage-B survival requires intermediation; learning cannot discover it before agents die.**
+- **[DECIDED 2026-10-13] Stage-B survival requires intermediation; learning cannot discover it before agents die.** The user chose learning sessions (technology unlock + death ramp) and raw-only subsistence with low-utility basic goods. Agents also value 2–5 goods (variable), with random high-variance weights on processed goods (FRAMEWORK §3.2, §6.1). The original analysis is kept below for the record.
   - **Evidence:**
     - B runs at iteration 50: survival 14% (warm-started from A) and 10% (scratch). The scratch run collapsed into autarky by iteration 50–60. The 89% of agents that depend on others' goods survive 3.5% / 0%.
     - 76–85% of deprived rounds happen because the agent holds less than γ, i.e. it has run out.
@@ -177,9 +184,9 @@ python -m scripts.report --run-dir results/A_s0                             # re
   - **Options:**
     - (a) **Mortality curriculum:** death off (subsistence only as a utility kink) for the first ~100–150 iterations, then on. Agents can then learn trade and intermediation first.
     - (b) **Subsistence only from raw goods** (`preferences.subsistence_max_tier=0`, `goods.raw_consumable_prob=1.0`): shorter supply chains; heuristic survival 22% → 55%.
-    - (c) Longer training (e.g. 1000 iterations). Uncertain; the scratch run already collapsed.
+    - (c) Longer training. **Tested on B_fromA_s0 to 300 iterations:** survival rises steadily but slowly (0.10 → 0.26, ~+0.05 per 100 iterations). Reaching 0.5 would take roughly 800 iterations if the trend held (≈ 8 h per seed). Possible, but impractical as the main fix; it is useful as a complement.
     - (d) Guarantee every agent a neighbour who earns its subsistence good. **Not recommended:** it removes the intermediation need that makes the economy interesting.
-  - **Recommendation:** (a) + (b). Both are economics/curriculum changes and need approval. Diagnostic scripts used (scratchpad, not in the repo): survival by agent group, deprivation causes, heuristic barter/money policies, calibration variants.
+  - **Recommendation (then):** (a) + (b), optionally with longer training. Implemented as decided above. Death is ramped (20 → 10 → 5) rather than switched off, because below subsistence utility is 0, so without death there is no survival incentive at all. Diagnostic scripts used (scratchpad, not in the repo): survival by agent group, deprivation causes, heuristic barter/money policies, calibration variants.
 - **Confirmatory design:** number of seeds (≥ 5 planned), and which knock-in/knock-out conditions and dose–response sweeps to run (FRAMEWORK §6.2/6.3). Needs a proposal and approval.
 - **Final stage thresholds** (`MetricsConfig`) must be fixed before confirmatory runs. They are currently provisional.
 - **Planned extensions (need approval):**

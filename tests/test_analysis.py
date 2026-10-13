@@ -119,3 +119,31 @@ class TestChangePoints(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSummarize(unittest.TestCase):
+    def test_cross_run_summary(self):
+        import json, os, tempfile
+        from scripts.summarize import load_runs, run_table, aggregate_table
+        def write(path, text):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+        with tempfile.TemporaryDirectory() as root:
+            for seed, hhi in ((0, 0.30), (1, 0.38)):
+                d = os.path.join(root, f"A_s{seed}")
+                os.makedirs(d)
+                write(os.path.join(d, "config.json"),
+                      json.dumps({"name": "A", "market": {"economy": "exchange"}, "ppo": {"iterations": 300}}))
+                write(os.path.join(d, "metrics.csv"), "iteration,seconds\n1,1.0\n300,9.0\n")
+                m = {"efficiency_vs_walras": 0.5, "resale_rate": 0.4, "null_resale_rate": 0.2, "costly_resale_rate": 0.4,
+                     "money_hhi": hhi, "null_money_hhi": 0.25, "stage": "indirect_exchange", "stage_counts": {"indirect_exchange": 4}}
+                write(os.path.join(d, "evaluation.json"), json.dumps({"learned_stochastic": m}))
+            os.makedirs(os.path.join(root, "B_s0"))
+            write(os.path.join(root, "B_s0", "config.json"),
+                  json.dumps({"name": "B", "market": {"economy": "production"}, "ppo": {"iterations": 300}}))
+            runs = load_runs(root)
+            self.assertEqual([r["run"] for r in runs], ["A_s0", "A_s1", "B_s0"])
+            self.assertIn("partial", run_table(runs, "production"))
+            agg = aggregate_table(runs)
+            self.assertIn("| A | 0, 1 | HHI |", agg)
+            self.assertIn("+0.050 / +0.130", agg)

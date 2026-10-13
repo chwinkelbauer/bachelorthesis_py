@@ -143,6 +143,8 @@ def collect_rollout(world: EconomyBatch, policy, greedy: bool = False) -> Rollou
             rewards[r, b, s] = world.consume(b, s, d.choice, d.amount)
 
         dones[r] = world.end_round()
+        if production and world.cfg.market.death_penalty:
+            rewards[r] -= world.cfg.market.death_penalty * dones[r].float()   # one-off cost of dying (not a money signal)
         if not production:
             rewards[r] = world.utility() - u_before
 

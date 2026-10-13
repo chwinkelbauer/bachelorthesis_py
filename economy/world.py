@@ -10,8 +10,8 @@ Production economy (stages B-D), one round t:
     1. income lumps arrive (stage B)                       2. labour: process inputs into a higher-tier good, or idle
     3. matching + negotiation + execution                  4. consumption c_t -> flow utility u_i(c_t)
     5. spoilage; deprivation counter (any subsistence good consumed below gamma); death after `death_after` rounds
-    reward r_t = u_i(c_t) = sum_k alpha_ik ln(1 + max(c_tk - gamma_ik, 0)); dead agents leave the market, their
-    holdings perish. Rollouts are truncated after R rounds and bootstrapped (effectively infinite horizon).
+    reward r_t = u_i(c_t) = sum_k alpha_ik ln(1 + max(c_tk - gamma_ik, 0)), minus `death_penalty` in the round an
+    agent dies (default 0); dead agents leave the market, their holdings perish. Rollouts are truncated after R rounds and bootstrapped (effectively infinite horizon).
 """
 
 from typing import Dict
@@ -61,6 +61,8 @@ class EconomyBatch:
                 self.period = torch.ones(B, N, dtype=torch.long)
                 self.phase = torch.zeros(B, N, dtype=torch.long)
             self.recipe = self.goods.recipe if pc.processing else torch.zeros_like(self.goods.recipe)
+            if pc.max_tier >= 0:   # technology level (learning sessions): higher tiers cannot be produced yet
+                self.recipe = self.recipe * (self.goods.tier <= pc.max_tier).unsqueeze(-1)
             if pc.income:
                 self.income = ensure_subsistence_feasible(self.income, self.period, self.gamma, self.goods.recipe,
                                                           self.goods.tier, pc.subsistence_surplus)
