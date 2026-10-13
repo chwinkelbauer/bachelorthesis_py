@@ -528,6 +528,22 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
 - **Replicates seed 0** (efficient barter + purposeful indirect exchange), but sits **closer to the money threshold** (HHI +0.12/+0.14 vs. +0.06 in seed 0).
 - **Late convergence trend:** after iteration ≈ 150, HHI keeps rising (0.28 → 0.42; change points at 60 and 250) while the no-use acceptance share falls (0.30 → 0.25). Agents become more selective *and* concentrate their indirect exchange on one good. The 300-iteration budget may cut off an ongoing convergence toward money, so A_s1 is extended to 600 iterations as a check.
 
+**A, seed 2** (`results/A_s2`, 300 iterations): efficiency 0.53, resale 0.37 (stronger null 0.21), costly resale 0.36, HHI 0.32 (null 0.245). Indirect exchange in 4/4 held-out batches. During training there were **money episodes** at iterations 160–180 and 250 (HHI ≈ 0.40, +0.15 over the null). Each coincided with a dip in the no-use acceptance share (≈ 0.21: more selective acceptance), and each dissolved again (HHI 0.30 at iteration 300).
+
+**Stage A across seeds 0–2** (held-out, learned stochastic; IQM with 95% bootstrap CI over 3 seeds, indicative only):
+
+| metric | IQM | CI | per seed | stronger null |
+|---|---|---|---|---|
+| efficiency vs. Walras | 0.54 | [0.53, 0.56] | 0.56 / 0.53 / 0.53 | ZI-C 0.23 |
+| resale rate | 0.39 | [0.37, 0.42] | 0.42 / 0.38 / 0.37 | 0.21 |
+| costly resale rate | 0.39 | [0.36, 0.44] | 0.44 / 0.36 / 0.36 | 0.21 |
+| money_hhi | 0.33 | [0.30, 0.38] | 0.30 / 0.38 / 0.32 | 0.245 (money ≥ 0.395) |
+| double-coincidence share | 0.61 | [0.60, 0.62] | 0.60 / 0.62 / 0.60 | 0.15 |
+
+- **Robust across seeds:** efficient barter plus purposeful (also costly) indirect exchange.
+- **Money is not robust:** the HHI excess over the null is +0.055, +0.135 and +0.07 (+0.15 required).
+- **Convention instability:** money conventions appear *transiently* late in training (seed 1: iteration 290; seed 2: iterations 160–180 and 250) and are not stable. This is consistent with stage A offering only a weak transaction motive (12 agents, 8 rounds, no time or production) to stabilise a medium of exchange.
+
 **B, seed 0, warm-started from A_s0** (`results/B_fromA_s0`, with reserve; **gate failed at iteration 150**: survival 0.23 < 0.5; held-out evaluation at iteration 150):
 
 | | learned greedy | learned stochastic | no-trade counterfactual | random-trade null |
@@ -615,3 +631,4 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
   - A_s2 started.
 - **2026-10-13:** A_s1 finished and evaluated (results log §12): indirect exchange, HHI near the money threshold, with a rising late trend. B_fromA_s0 resumed from iteration 151 (exact RNG state).
 - **2026-10-13:** Night 1 summary added (§12). The PC was in sleep-button/lid standby from 03:26 to 08:59. A_s2 and the resumed B_fromA_s0 continue in the morning.
+- **2026-10-13:** A_s2 finished and evaluated. Added the first cross-seed aggregate for stage A (seeds 0–2) and the transient money episodes to the results log (§12). A_s3 started.

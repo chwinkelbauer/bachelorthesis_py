@@ -162,7 +162,7 @@ python -m scripts.report --run-dir results/A_s0                             # re
 - [ ] 8. **D warm from C:** `--preset D --seed 0 --init results/C_fromB_s0/checkpoint.pt --run-dir results/D_fromC_s0`. Then the disturbance evaluations:
   - D with `--set ledger.switch_round=12 --out evaluation_switch_off.json`
   - C_fromB with `--set ledger.enabled=true ledger.switch_round=12 --out evaluation_switch_on.json`
-- [ ] 9. **More seeds for statistics** (A seeds 1–4, then B_fromA seeds 1–2), as time allows. *Progress:* A_s1 done (indirect exchange, HHI 0.36–0.38, close to the money threshold); A_s2 running; A_s3 and A_s4 next. The B_fromA seeds are blocked (§8).
+- [ ] 9. **More seeds for statistics** (A seeds 1–4, then B_fromA seeds 1–2), as time allows. *Progress:* A_s1 and A_s2 done (indirect exchange; transient money episodes; cross-seed table in FRAMEWORK §12); A_s3 running (started 09:37); A_s4 next. The B_fromA seeds are blocked (§8).
 - [ ] 10. *(added in night 1, run-length check, no design change)* Extend A_s1 to 600 iterations (`--resume --iterations 600 --run-dir results/A_s1`), because its HHI was still rising at iteration 300. If it crosses the threshold, also extend A_s0. Aggregate with `analysis/stats.py` (IQM + bootstrap CI).
 
 ## 8. Pending decisions (for the user; add proposals here)
