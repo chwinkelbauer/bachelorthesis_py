@@ -64,7 +64,7 @@ preferences *invent* money, and which condition causes it?
     -WorkingDirectory (Get-Location).Path -RedirectStandardOutput "results\B_s0.log" `
     -RedirectStandardError "results\B_s0.err" -WindowStyle Hidden -PassThru
   ```
-- **The PC can suspend during unattended nights** even with sleep set to "never": on 2026-10-12/13, both runs and the session were suspended for about 1.5 h, between iteration ≈ 15 and 16, and the 23:27 wake-up fired at 00:35.
+- **The PC can suspend during unattended nights** even with sleep set to "never". This laptop uses **Modern Standby** (S0 low power idle), which starts when the display turns off and pauses desktop processes. On 2026-10-12/13, it suspended the runs repeatedly between 23:02 and 02:37 (Kernel-Power events 506/507). `ES_SYSTEM_REQUIRED` alone did not prevent this, so the helper now also requests `ES_DISPLAY_REQUIRED` and the display stays on. A closed lid still triggers standby.
   - At the start of every night, run the keep-awake helper (no power settings are changed; it ends at -Hours or when `results/.stop_keep_awake` exists):
     `Start-Process powershell -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-File","scripts\keep_awake.ps1","-Hours","10" -WindowStyle Hidden`
   - A suspension shows up as one huge `seconds` jump in metrics.csv. It does not affect results.
@@ -141,9 +141,9 @@ python -m scripts.report --run-dir results/A_s0                             # re
 
 ## 7. Experiment queue (ordered; tick items and add the result path)
 - [x] 1. A_s0 finished at 16:22 and was re-evaluated against the stronger null: indirect exchange, no money (FRAMEWORK §12). Logs are in `results/A_s0/train.log`; the old evaluation is kept as `evaluation_random_null_only.json`.
-- [ ] 2. **B warm from A:** `--preset B --seed 0 --init results/A_s0/checkpoint.pt --run-dir results/B_fromA_s0`
+- [x] 2. **B warm from A**: `results/B_fromA_s0`. Gate failed at iteration 150 (survival 0.23). Evaluated: barter; +23% welfare from trade vs. no trade; survival still rising. It is resumed to 300 as a trend check for option (c) in §8.
 - [x] 3. **B from scratch**: `results/B_s0`. Stopped at iteration 69 after failing the gate (autarky collapse, survival 10–15%). Diagnosis in §8 / FRAMEWORK §11.
-- [ ] 4. Gate check on 2 and 3. If both fail: stop the B/C chain and diagnose.
+- [x] 4. Gate check: **both failed**. The B/C/D chain (items 5, 6, 8 and the B/C controls in 7) is **blocked until the user decides on the stage-B proposal in §8**.
 - [ ] 5. **C warm from B:** `--preset C --seed 0 --init results/B_fromA_s0/checkpoint.pt --run-dir results/C_fromB_s0`
 - [ ] 6. **C from scratch:** `--preset C --seed 0` → `results/C_s0`
 - [ ] 7. **Controls:**

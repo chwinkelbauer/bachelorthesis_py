@@ -507,6 +507,23 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
 - **Change points:** resale and HHI at iterations 60 and 110; efficiency at 50, 100 and 150.
 - **Observation (not a claim):** an early transient. HHI peaked at 0.49 around iteration 30, and two training batches (iterations 40–50) were classified as "money", while trade per meeting was very low (≈ 0.12). Concentration then decayed as trading widened. Note that the training log of this run used the random-only null (code loaded before the stronger-null change); only the held-out evaluation uses the stronger null.
 
+**B, seed 0, warm-started from A_s0** (`results/B_fromA_s0`, with reserve; **gate failed at iteration 150**: survival 0.23 < 0.5; held-out evaluation at iteration 150):
+
+| | learned greedy | learned stochastic | no-trade counterfactual | random-trade null |
+|---|---|---|---|---|
+| flow utility per living agent-round | 0.239 | 0.235 | 0.191 | 0.197 |
+| survival over 24 rounds | 0.20 | 0.19 | 0.14 | 0.14 |
+| trade rate | 0.35 | 0.42 | 0 | 0.49 |
+| completed pass-through (stronger null 0.175–0.184) | 0.12 | 0.15 | — | 0.12 |
+| money_hhi (stronger null 0.40) | 0.49 | 0.43 | — | 0.40 |
+| stage (4/4 batches) | barter | barter | autarky | barter |
+
+- **Gains from trade:** learned trading raises welfare by about 23% over no trade and over random trading, and improves survival. Unlike the scratch run, the warm start (trading skills from A) prevents the autarky collapse. That is the curriculum effect.
+- **Below the null:** pass-through stays below the stronger null, so the stage is barter.
+- **Concentration:** the pass-through that does occur is more concentrated than under the null (+0.03 to +0.09 held-out, up to +0.14 in training).
+- **Still rising at the gate:** survival 0.10 → 0.23 (change point at iteration 100), and labour specialisation 0.66 → 0.82.
+- **Consequence:** the C/D chain is blocked by the gate. The run is resumed to 300 iterations to test whether longer training is enough (option (c) in CLAUDE.md §8).
+
 **B, seed 0, from scratch** (`results/B_s0`, with reserve; stopped at iteration 69 after failing the gate): autarky from iteration ≈ 50 (trade rate 0.41 → 0.00), survival 10–15%. This replicates the pilot-B collapse despite the reserve. See §11 for the intermediation diagnosis.
 
 **Pilot B, seed 0** (no reserve; `results/pilot_B_s0_no_reserve`, stopped at iteration 86): collapsed into autarky (trade rate 0.42 → 0.002, survival 9% → 14%). Diagnosis and fix in §11.
@@ -571,3 +588,7 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
   - B_s0 (scratch) stopped at iteration 69 after failing the gate (autarky).
   - Stage-B survival diagnosis recorded (§11): survival requires intermediation; heuristic feasibility tests were run.
   - The proposal is in CLAUDE.md §8. A_s1 started (queue item 9).
+- **2026-10-13:** First night, continued:
+  - B_fromA_s0 failed the gate at iteration 150 (survival 0.23); it was evaluated, and its results are logged in §12. It will be resumed to 300 to test the trend.
+  - The keep-awake helper now also requests `ES_DISPLAY_REQUIRED`: the laptop uses Modern Standby, which starts when the display turns off (it suspended the runs repeatedly between 23:02 and 02:37).
+  - A_s2 started.
