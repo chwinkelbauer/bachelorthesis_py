@@ -219,7 +219,10 @@ def compute_production_metrics(rec: EpisodeRecord, cfg: MetricsConfig) -> Dict[s
             out[f"trade_rate_{label}"] = float(in_window.sum()) / max(float(rounds_meetings[sl].sum()), 1.0)
 
     out["mean_flow_utility"] = float(flows.utility.sum() / flows.alive_rounds.sum().clamp(min=1.0))
-    out["survival_rate"] = float(1.0 - flows.deaths.mean())
+    out["survival_rate"] = float(1.0 - flows.initial_deaths.mean())     # agents present at round 0 still alive at the end
+    out["births"] = float(flows.births.sum(1).mean())                   # newcomers per world (respawn)
+    out["death_rate"] = float(flows.deaths.sum() / flows.alive_rounds.sum().clamp(min=1.0))   # deaths per living agent-round
+    out["population_share"] = float(flows.alive_rounds.mean() / max(rec.rounds, 1))         # how full the market is
     out["consumed_share_of_supply"] = float(flows.consumed.sum() / flows.supply.sum().clamp(min=1e-9))
     return out
 

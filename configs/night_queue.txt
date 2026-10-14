@@ -1,0 +1,22 @@
+# Night queue for scripts/run_queue.py (CLAUDE.md §6/§7). Run with:
+#     python -m scripts.run_queue configs/night_queue.txt --parallel 2       (start it detached, CLAUDE.md §3)
+# Format: "<name>: <command> [&& <command>]" per job, "wait" = barrier. Paths with forward slashes.
+#
+# Night 3 (prepared 2026-10-14): 2x2 screening of money levers, seed 0, warm start from A_s0.
+# B4 = preset B (learning sessions, raw subsistence, random tier weights, death penalty 0.5, entropy 0.03,
+#      continuous subsistence utility against feast-and-fast, hunger-debt death rule, newcomers refill empty slots)
+#   x F1 rarer double coincidence (B_rare: 15 goods, 2-3 valued)  x F4 perishable goods (spoilage U[0, 0.25]).
+# Each job: training (+ automatic evaluation) and the report figure.
+# Newcomers keep the market full, so iterations are ~2x slower in the full economy than in night 2.
+# Expected: B4 ~4.8 h, B4_rare_perishable ~6.2 h in parallel -> ~6.5 h in total (round 1 only).
+
+# Round 1: the two corners (baseline and both levers)
+B4_fromA_s0: python -u -m scripts.train --preset B --seed 0 --init results/A_s0/checkpoint.pt --run-dir results/B4_fromA_s0 && python -m scripts.report --run-dir results/B4_fromA_s0
+B4_rare_perishable_fromA_s0: python -u -m scripts.train --preset B_rare_perishable --seed 0 --init results/A_s0/checkpoint.pt --run-dir results/B4_rare_perishable_fromA_s0 && python -m scripts.report --run-dir results/B4_rare_perishable_fromA_s0
+
+# Round 2 (night 4): one lever each. Commented out tonight: with newcomers all four runs would take ~11-12 h.
+# B4_rare_fromA_s0: python -u -m scripts.train --preset B_rare --seed 0 --init results/A_s0/checkpoint.pt --run-dir results/B4_rare_fromA_s0 && python -m scripts.report --run-dir results/B4_rare_fromA_s0
+# B4_perishable_fromA_s0: python -u -m scripts.train --preset B_perishable --seed 0 --init results/A_s0/checkpoint.pt --run-dir results/B4_perishable_fromA_s0 && python -m scripts.report --run-dir results/B4_perishable_fromA_s0
+
+wait
+summary: python -m scripts.summarize --out results/summary.md

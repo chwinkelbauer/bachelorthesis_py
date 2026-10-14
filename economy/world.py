@@ -9,7 +9,9 @@ Exchange economy (stage A), one round t:
 Production economy (stages B-D), one round t:
     1. income lumps arrive (stage B)                       2. labour: process inputs into a higher-tier good, or idle
     3. matching + negotiation + execution                  4. consumption c_t -> flow utility u_i(c_t)
-    5. spoilage; deprivation counter (any subsistence good consumed below gamma); death after `death_after` rounds
+    0. (respawn) slots empty for `respawn_after` rounds get a newcomer: new preferences, same position and income
+    5. spoilage; deprivation: consecutive deprived rounds (default) or hunger debt d <- max(0, d + 1 - c/gamma)
+       (hunger_debt); death when it reaches `death_after`
     reward r_t = u_i(c_t) = sum_k alpha_ik ln(1 + max(c_tk - gamma_ik, 0)), minus `death_penalty` in the round an
     agent dies (default 0); dead agents leave the market, their holdings perish. Rollouts are truncated after R rounds and bootstrapped (effectively infinite horizon).
 """
@@ -20,10 +22,10 @@ import torch
 
 from configs.base import ExperimentConfig
 from economy.goods import generate_goods
-from economy.preferences import sample_preferences, utility
+from economy.preferences import sample_preferences, sample_agent_preferences, utility
 from economy.endowments import sample_endowments
 from economy.network import build_networks, random_maximal_matching, matched_pairs
-from economy.observations import public_tokens, private_tokens, decision_inputs
+from economy.observations import public_tokens, private_tokens, decision_inputs, memory_inputs, EXPERIENCE_FEATURES
 from economy.production import (
     sample_income, income_arrives, rounds_to_next_income, max_output, usefulness, input_value,
     capacity_limited_output, ensure_subsistence_feasible, sample_harvest,
@@ -43,6 +45,7 @@ class EconomyBatch:
         self.R = cfg.market.rounds
         self.capacity = cfg.market.capacity
         self.full_information = cfg.market.full_information
+        self.continuous = cfg.preferences.continuous_subsistence   # hunger below gamma costs utility
 
     # ------------------------------------------------------------------ lifecycle
     def reset(self) -> None:
@@ -85,9 +88,16 @@ class EconomyBatch:
         self.alive = torch.ones(B, N, dtype=torch.bool)
         self.deprivation = torch.zeros(B, N)
         self._deprived = torch.zeros(B, N, dtype=torch.bool)
+        self._shortfall = (self.gamma > 0).any(-1).float()     # hunger debt added this round (1 = ate nothing)
+        self.dead_round = torch.full((B, N), -1, dtype=torch.long)
+        self.born = torch.zeros(B, N, dtype=torch.bool)        # newcomers that entered at the start of this round
         self.round = 0
         self.contribution = torch.zeros(B, N, G)               # public record: units given minus received
+        self.retired_contribution = torch.zeros(B, G)          # records of dead agents replaced by newcomers
         self.bilateral = torch.zeros(B, N, N, G)               # bilateral[b, i, j]: net units i received from j
+        # private trade experience (memory input): observed = last round (log units), _exp_round = current round
+        self.experience = torch.zeros(B, N, G, EXPERIENCE_FEATURES)
+        self._exp_round = torch.zeros(B, N, G, EXPERIENCE_FEATURES)
         flows = None
         if self.production:
             flows = FlowTracker(B, N, G, self.R)
@@ -107,7 +117,7 @@ class EconomyBatch:
 
     # ------------------------------------------------------------------ economics
     def utility(self, x: torch.Tensor = None) -> torch.Tensor:
-        return utility(self.x if x is None else x, self.alpha, self.gamma)
+        return utility(self.x if x is None else x, self.alpha, self.gamma, self.continuous)
 
     def ledger_on(self) -> bool:
         """Ledger state in the current round: `enabled`, flipped from `switch_round` on."""
@@ -120,9 +130,10 @@ class EconomyBatch:
         return self.adj & self.alive.unsqueeze(1) & self.alive.unsqueeze(2)
 
     def begin_round(self) -> None:
-        """Production economy: income lumps arrive."""
+        """Production economy: newcomers enter empty slots (if enabled), then income lumps arrive."""
         if not self.production:
             return
+        self._respawn()
         self.record.flows.round = self.round
         arrive = income_arrives(self.period, self.phase, self.round) & self.alive
         before = self.x
@@ -165,6 +176,43 @@ class EconomyBatch:
             self.record.flows.produced.index_put_((b, k), q, accumulate=True)
             self.record.flows.supply.index_put_((b, k), q, accumulate=True)
 
+    def _respawn(self) -> None:
+        """
+        Slots empty for more than `respawn_after` rounds get a newcomer. The newcomer keeps the slot's position (network
+        node, income good and schedule, harvest access and skills) but draws new preferences and needs; it starts like a
+        round-0 agent (one income lump / harvest plus the subsistence reserve) and without history (ledger, experience).
+        """
+        self.born = torch.zeros(self.B, self.N, dtype=torch.bool)
+        k = self.cfg.market.respawn_after
+        if k < 0:
+            return
+        due = ~self.alive & (self.dead_round >= 0) & (self.round - self.dead_round > k)
+        if not due.any():
+            return
+        for b, i in torch.nonzero(due).tolist():
+            self.alpha[b, i], self.gamma[b, i] = sample_agent_preferences(self.cfg.preferences, self.goods, b)
+        pc = self.cfg.production
+        start = self._fit_capacity(torch.zeros_like(self.x), self.income + self.harvest)
+        start = self._fit_capacity(start, self.gamma * pc.subsistence_buffer_rounds)
+        mask = due.unsqueeze(-1)
+        self.x = torch.where(mask, start, self.x)
+        flows = self.record.flows
+        flows.supply += (start * mask).sum(1)
+        flows.pool[due] = 0.0
+        flows.births += due.float()
+        self.alive |= due
+        self.deprivation[due] = 0.0
+        self._shortfall[due] = (self.gamma[due] > 0).any(-1).float()
+        self.dead_round[due] = -1
+        self.experience[due] = 0.0
+        self._exp_round[due] = 0.0
+        self.retired_contribution += (self.contribution * mask).sum(1)
+        self.contribution[due] = 0.0
+        self.bilateral = self.bilateral.masked_fill(due[:, :, None, None] | due[:, None, :, None], 0.0)
+        self.useful = usefulness(self.alpha, self.recipe)
+        self.input_value = input_value(self.alpha, self.recipe)
+        self.born = due
+
     def match(self):
         partner = random_maximal_matching(self.adjacency())
         b, proposer, responder = matched_pairs(partner)
@@ -177,8 +225,8 @@ class EconomyBatch:
         if b.numel() == 0:
             return
         xa, xp = self.x[b, a].clone(), self.x[b, p].clone()
-        u_a = utility(xa, self.alpha[b, a], self.gamma[b, a])
-        u_p = utility(xp, self.alpha[b, p], self.gamma[b, p])
+        u_a = utility(xa, self.alpha[b, a], self.gamma[b, a], self.continuous)
+        u_p = utility(xp, self.alpha[b, p], self.gamma[b, p], self.continuous)
         if self.production:
             flows = self.record.flows
             useful_a = (recv_a * self.useful[b, a]).sum(-1) > 0
@@ -192,9 +240,18 @@ class EconomyBatch:
         self.contribution[b, p] += net_a
         self.bilateral[b, a, p] += net_a
         self.bilateral[b, p, a] -= net_a
-        du_a = utility(self.x[b, a], self.alpha[b, a], self.gamma[b, a]) - u_a
-        du_p = utility(self.x[b, p], self.alpha[b, p], self.gamma[b, p]) - u_p
+        self._exp_round[b, a, :, 0] += recv_a                  # received
+        self._exp_round[b, a, :, 1] += give_a                  # given
+        self._exp_round[b, p, :, 0] += give_a
+        self._exp_round[b, p, :, 1] += recv_a
+        du_a = utility(self.x[b, a], self.alpha[b, a], self.gamma[b, a], self.continuous) - u_a
+        du_p = utility(self.x[b, p], self.alpha[b, p], self.gamma[b, p], self.continuous) - u_p
         self.record.add(b, self.round, a, p, recv_a, give_a, du_a, du_p, turn)
+
+    def observe_offer(self, b, viewer, give, want) -> None:
+        """An offer made to `viewer`: the partner offers `give` and asks for `want` (units, viewer's perspective)."""
+        self._exp_round[b, viewer, :, 2] += want               # partner asked for these goods
+        self._exp_round[b, viewer, :, 3] += give               # partner offered these goods
 
     def consume(self, b, i, choice, amount) -> torch.Tensor:
         """Consumes amount * x_k of every good with choice 1; returns the flow utility (D,)."""
@@ -204,10 +261,14 @@ class EconomyBatch:
         flows.remove(b, i, c, x)
         flows.consumed.index_put_((b,), c, accumulate=True)
         self.x[b, i] = (x - c).clamp(min=0.0)
-        u = utility(c, self.alpha[b, i], self.gamma[b, i])
+        u = utility(c, self.alpha[b, i], self.gamma[b, i], self.continuous)
         flows.utility.index_put_((b, i), u, accumulate=True)
         gamma = self.gamma[b, i]
-        self._deprived[b, i] = ((gamma > 0) & (c < gamma)).any(-1)
+        need = gamma > 0
+        self._deprived[b, i] = (need & (c < gamma)).any(-1)
+        # hunger debt of this round, in rounds of need (mean over the agent's subsistence goods; negative = repayment)
+        missing = torch.where(need, 1.0 - c / gamma.clamp(min=1e-12), torch.zeros_like(c))
+        self._shortfall[b, i] = missing.sum(-1) / need.sum(-1).clamp(min=1)
         return u
 
     def end_round(self) -> torch.Tensor:
@@ -218,13 +279,22 @@ class EconomyBatch:
         if self.production:
             flows = self.record.flows
             flows.pool *= keep
-            self.deprivation = torch.where(self._deprived & self.alive, self.deprivation + 1, torch.zeros_like(self.deprivation))
-            died = self.alive & (self.deprivation >= self.cfg.market.death_after)
+            if self.cfg.market.hunger_debt:
+                self.deprivation = torch.where(self.alive, (self.deprivation + self._shortfall).clamp(min=0.0), self.deprivation)
+                died = self.alive & (self.deprivation >= self.cfg.market.death_after - 1e-6)
+            else:
+                self.deprivation = torch.where(self._deprived & self.alive, self.deprivation + 1, torch.zeros_like(self.deprivation))
+                died = self.alive & (self.deprivation >= self.cfg.market.death_after)
             self.alive &= ~died
             self.x[died] = 0.0
             flows.pool[died] = 0.0
             flows.deaths += died.float()
+            flows.initial_deaths += (died & (flows.births == 0)).float()
+            self.dead_round[died] = self.round
             self._deprived.zero_()
+            self._shortfall = (self.gamma > 0).any(-1).float()
+        self.experience = torch.log1p(self._exp_round)
+        self._exp_round = torch.zeros_like(self._exp_round)
         self.round += 1
         if self.round >= self.R:
             self.record.x_final = self.x.clone()
@@ -247,16 +317,21 @@ class EconomyBatch:
             "feasible": feasible, "input_value": self.input_value[b], "harvest": self.harvest[b],
         }
 
+    def memory_inputs(self, x: torch.Tensor, b: torch.Tensor = None, experience: torch.Tensor = None) -> torch.Tensor:
+        b = torch.arange(self.B) if b is None else b
+        experience = self.experience[b] if experience is None else experience
+        return memory_inputs(experience, self.goods_features[b], x)
+
     def public_tokens(self, x: torch.Tensor, b: torch.Tensor = None) -> torch.Tensor:
         b = torch.arange(self.B) if b is None else b
-        return public_tokens(x, self.alpha[b], self.gamma[b], self.goods_features[b], self.full_information)
+        return public_tokens(x, self.alpha[b], self.gamma[b], self.goods_features[b], self.full_information, self.continuous)
 
     def private_tokens(self, x: torch.Tensor, b: torch.Tensor = None, t=None, deprivation: torch.Tensor = None) -> torch.Tensor:
         b = torch.arange(self.B) if b is None else b
         t = self.round if t is None else t
         deprivation = self.deprivation[b] if deprivation is None else deprivation
         extras = self._extras(x, b, t, deprivation)
-        return private_tokens(x, self.alpha[b], self.gamma[b], self.goods_features[b], extras)
+        return private_tokens(x, self.alpha[b], self.gamma[b], self.goods_features[b], extras, self.continuous)
 
     def decision_tensors(self, mode, b, s, p, x_s, x_p, recv, give, has_offer, turn, is_proposer):
         """Decision inputs for agents s (partners p) in worlds b at the current round."""
@@ -277,6 +352,7 @@ class EconomyBatch:
             self.goods_features[b], self.weight[b], recv, give, has_offer, turn, is_proposer, round_frac,
             self.capacity, self.full_information,
             ledger_partner=self.contribution[b, p], ledger_bilateral=self.bilateral[b, s, p], ledger_on=self.ledger_on(),
+            continuous=self.continuous,
         )
 
     def labour_mask(self, b, s, x_s) -> torch.Tensor:

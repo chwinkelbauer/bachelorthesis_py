@@ -46,6 +46,7 @@ PRODUCTION_FIELDS = (
     "pass_through_rate", "money_hhi", "worlds_with_pass_through", "traded_share_of_supply", "double_coincidence_share",
     "money_good_spoilage_rank", "money_good_weight_rank", "money_good_tier_rank", "mean_flow_utility", "survival_rate",
     "consumed_share_of_supply", "labour_specialization", "idle_share", "harvest_share", "process_share",
+    "births", "death_rate", "population_share",
 )
 NULL_KEYS = {"exchange": ("no_use_share", "resale_rate", "money_hhi"),
              "production": ("pass_through_rate", "money_hhi", "mean_flow_utility")}
@@ -131,6 +132,28 @@ def _truncate_log(path: str, last_iteration: int, fields) -> None:
         writer.writerows(r for r in rows if int(r["iteration"]) <= last_iteration)
 
 
+def load_compatible(module: torch.nn.Module, state: Dict[str, torch.Tensor]) -> None:
+    """
+    Loads a state dict into a model that may have more input features (memory features appended to a layer's input)
+    or extra modules (the memory GRU). New input columns get zero weights and new modules keep their initialisation,
+    so the loaded model computes exactly what the source model computed until it is trained (warm start A -> B+memory).
+    """
+    own = module.state_dict()
+    for key, value in state.items():
+        if key not in own:
+            raise KeyError(f"Checkpoint parameter {key} does not exist in the model")
+        target = own[key]
+        if target.shape == value.shape:
+            own[key] = value
+        elif target.dim() == 2 and target.shape[0] == value.shape[0] and target.shape[1] > value.shape[1]:
+            padded = torch.zeros_like(target)
+            padded[:, :value.shape[1]] = value
+            own[key] = padded
+        else:
+            raise ValueError(f"Cannot load {key}: shape {tuple(value.shape)} into {tuple(target.shape)}")
+    module.load_state_dict(own)
+
+
 def load_checkpoint(path: str):
     data = torch.load(path, map_location="cpu", weights_only=False)
     cfg = ExperimentConfig.from_dict(data["config"])
@@ -168,8 +191,8 @@ def train(cfg: ExperimentConfig, run_dir: str, init_checkpoint: Optional[str] = 
             json.dump(cfg.to_dict(), f, indent=2)
         if init_checkpoint:  # warm start (curriculum); optimizer state is not carried over
             _, p_init, c_init, _, _ = load_checkpoint(init_checkpoint)
-            policy.load_state_dict(p_init.state_dict())
-            critic.load_state_dict(c_init.state_dict())
+            load_compatible(policy, p_init.state_dict())       # also into a model with memory (zero-padded inputs)
+            load_compatible(critic, c_init.state_dict())
 
     validate_sessions(cfg)
     world, session = None, None

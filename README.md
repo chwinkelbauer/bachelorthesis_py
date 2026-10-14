@@ -8,13 +8,13 @@ null models and theoretical benchmarks.
 **The full specification (model, mathematics, metrics, design, status and changelog) is in
 [docs/FRAMEWORK.md](docs/FRAMEWORK.md).** That document is kept in sync with the code.
 
-## Status (2026-10-13)
+## Status (2026-10-14)
 - **Implemented:** stages A–D (pure exchange → income/production/consumption → harvesting as a labour choice → public ledger).
 - **Stage A** (3 seeds): agents learn efficient barter and purposeful indirect exchange, but no stable money yet.
-- **Stage B:** survival requires intermediation and was too low in the first design. Redesigned (not yet trained): learning sessions (technology unlocked step by step, death rule tightened), subsistence from raw goods only, and random high-utility weights on processed goods.
+- **Stage B:** after the redesign (learning sessions, raw-only subsistence, random high-utility processed goods) survival reaches 0.5–0.6, but agents partly game the death rule (fasting just short of death), and they barter without money, also when goods are perishable. Next: fix the subsistence rule, then test rarer double coincidence and agent memory.
 - **C and D:** not run yet.
 
-Details are in [docs/FRAMEWORK.md](docs/FRAMEWORK.md) §12; the operating manual for working sessions is [CLAUDE.md](CLAUDE.md).
+Details are in [docs/FRAMEWORK.md](docs/FRAMEWORK.md) §12; a complete explanation of how everything works is in [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md); the operating manual for working sessions is [CLAUDE.md](CLAUDE.md).
 
 ## Quickstart
 ```bash
@@ -41,5 +41,5 @@ Presets: `A`, `A_complete`, `A_full_info`, `B`, `B_constant_income`, `C`, `C_no_
 | `analysis/` | Walras/planner benchmarks, money metrics, change points, statistics |
 | `scripts/` | command-line entry points |
 | `tests/` | unit and smoke tests |
-| `docs/` | living framework specification |
+| `docs/` | `FRAMEWORK.md` (living specification, results log, changelog) and `HOW_IT_WORKS.md` (detailed plain-language explanation of every mechanic and of the training) |
 | `CLAUDE.md` | operating manual: working rules, current state, experiment queue, pending decisions |

@@ -147,3 +147,49 @@ class TestSummarize(unittest.TestCase):
             agg = aggregate_table(runs)
             self.assertIn("| A | 0, 1 | HHI |", agg)
             self.assertIn("+0.050 / +0.130", agg)
+
+
+class TestRunQueue(unittest.TestCase):
+    def test_parallel_jobs_barrier_and_failure(self):
+        import os, tempfile
+        from scripts.run_queue import parse_queue, Runner
+        with tempfile.TemporaryDirectory() as d:
+            q = os.path.join(d, "queue.txt")
+            fwd = d.replace("\\", "/")                                              # queue files use forward slashes
+            touch = "python -c \"import sys, time; time.sleep(0.3); open(sys.argv[1], 'w').write('x')\""
+            with open(q, "w", encoding="utf-8") as f:
+                f.write("# comment\n\n")
+                f.write(f"a: {touch} {fwd}/a.txt\n")
+                f.write(f"bad: python -c \"raise SystemExit(3)\" && {touch} {fwd}/never.txt\n")
+                f.write("wait\n")
+                f.write(f"b: {touch} {fwd}/b.txt\n")
+            items = parse_queue(q)
+            self.assertEqual([i if i == "wait" else i[0] for i in items], ["a", "bad", "wait", "b"])
+            os.makedirs(os.path.join(d, "a"))                                       # a run directory: logs move there
+            code = Runner(d, parallel=2).run(items)
+            self.assertEqual(code, 1)                                               # one job failed
+            self.assertTrue(os.path.exists(os.path.join(d, "a.txt")) and os.path.exists(os.path.join(d, "b.txt")))
+            self.assertFalse(os.path.exists(os.path.join(d, "never.txt")))          # failed job's chain stops
+            self.assertTrue(os.path.exists(os.path.join(d, "a", "train.log")))
+            with open(os.path.join(d, "queue.log"), encoding="utf-8") as f:
+                log = f.read()
+            self.assertIn("FAILED bad", log)
+            self.assertIn("failed jobs: bad", log)
+
+    def test_backslash_paths_rejected(self):
+        import os, tempfile
+        from scripts.run_queue import parse_queue
+        with tempfile.TemporaryDirectory() as d:
+            q = os.path.join(d, "queue.txt")
+            with open(q, "w", encoding="utf-8") as f:
+                f.write("x: python -m scripts.report --run-dir results\\A_s0\n")
+            self.assertRaises(ValueError, parse_queue, q)
+
+    def test_stop_file(self):
+        import os, sys, tempfile
+        from scripts.run_queue import Runner
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "queue.stop"), "w").close()
+            Runner(d, parallel=1).run([("x", [[sys.executable, "-c", "open('never', 'w')"]])])
+            with open(os.path.join(d, "queue.log"), encoding="utf-8") as f:
+                self.assertIn("queue.stop found", f.read())

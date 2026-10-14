@@ -70,7 +70,8 @@ class FlowTracker:
         passed    completed pass-through volume
         consumed  units consumed
         produced / harvested  units made by processing / harvesting
-    Per agent (B, N): utility (summed flow utility), alive_rounds, deaths.
+    Per agent slot (B, N): utility (summed flow utility), alive_rounds, deaths, births (newcomers in the slot),
+    initial_deaths (deaths of the agents present at round 0).
     """
 
     def __init__(self, B: int, N: int, G: int, R: int):
@@ -88,6 +89,8 @@ class FlowTracker:
         self.utility = torch.zeros(B, N)
         self.alive_rounds = torch.zeros(B, N)
         self.deaths = torch.zeros(B, N)
+        self.births = torch.zeros(B, N)
+        self.initial_deaths = torch.zeros(B, N)
 
     @staticmethod
     def _keep_fraction(outflow: torch.Tensor, holding: torch.Tensor) -> torch.Tensor:

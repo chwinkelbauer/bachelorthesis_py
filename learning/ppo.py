@@ -6,7 +6,8 @@ decisions, consumption) form one composite action whose log-probability is the s
 without decisions carry no policy gradient but still train the critic. Agents that are dead at the start of a round
 are masked out. Exchange economies end after the last round (terminal); production economies are truncated and the
 value of the state after the last round is bootstrapped (effectively infinite horizon).
-Minibatches are formed over whole worlds so that every agent-round is complete.
+Minibatches are formed over whole worlds so that every agent-round is complete. With agent memory, the per-good
+memory is recomputed over all rounds of the minibatch worlds, so gradients flow through time (truncated at the rollout).
 """
 
 from typing import Dict
@@ -34,7 +35,22 @@ def snapshot_inputs(world: EconomyBatch, rollout: Rollout, worlds: torch.Tensor,
 
 def critic_values(critic: CriticNet, world: EconomyBatch, rollout: Rollout, worlds: torch.Tensor, rounds: int) -> torch.Tensor:
     _, priv, adj, alive = snapshot_inputs(world, rollout, worlds, rounds)
+    if critic.extra_features:                                 # memory runs: the critic also sees the raw trade experience
+        exp = rollout.experience[:rounds, worlds]
+        priv = torch.cat([priv, exp.reshape(-1, *exp.shape[2:])], dim=-1)
     return critic(priv, adj, alive).view(rounds, worlds.numel(), -1)
+
+
+def memory_sequence(policy: PolicyNet, world: EconomyBatch, rollout: Rollout, worlds: torch.Tensor, rounds: int) -> torch.Tensor:
+    """Per-good memory (rounds, W, N, G, M) recomputed from the stored experience, differentiable through time."""
+    W, N, G = worlds.numel(), world.N, world.G
+    mem = policy.initial_memory(W, N, G)
+    states = []
+    for r in range(rounds):
+        mem = mem.masked_fill(rollout.born[r, worlds][..., None, None], 0.0)          # newcomers start empty
+        mem = policy.remember(world.memory_inputs(rollout.X[r, worlds], worlds, rollout.experience[r, worlds]), mem)
+        states.append(mem)
+    return torch.stack(states)
 
 
 def gae(rewards, values, dones, bootstrap_values, gamma: float, lam: float):
@@ -51,18 +67,21 @@ def gae(rewards, values, dones, bootstrap_values, gamma: float, lam: float):
     return adv, adv + values
 
 
-def _evaluate_kind(policy: PolicyNet, kind: str, st: dict, sel, z, h, pw):
+def _evaluate_kind(policy: PolicyNet, kind: str, st: dict, sel, z, h, pw, mem=None):
     rr, ss = st["r"][sel], st["s"][sel]
     zs = z[rr, pw, ss]
+    tokens = st["tokens"][sel]
+    if mem is not None:
+        tokens = torch.cat([tokens, mem[rr, pw, ss]], dim=-1)
     if kind == "trade":
         actions = Decision(st["response"][sel], st["direction"][sel], st["amount"][sel], None, None)
-        return policy.decide(zs, h[rr, pw, st["p"][sel]], st["tokens"][sel], st["context"][sel],
+        return policy.decide(zs, h[rr, pw, st["p"][sel]], tokens, st["context"][sel],
                              st["dir_mask"][sel], st["resp_mask"][sel], actions=actions)
     if kind == "labour":
         actions = LabourDecision(st["choice"][sel], st["amount"][sel], None, None)
-        return policy.labour(zs, h[rr, pw, ss], st["tokens"][sel], st["context"][sel], st["mask"][sel], actions=actions)
+        return policy.labour(zs, h[rr, pw, ss], tokens, st["context"][sel], st["mask"][sel], actions=actions)
     actions = ConsumeDecision(st["choice"][sel], st["amount"][sel], None, None)
-    return policy.consume(zs, h[rr, pw, ss], st["tokens"][sel], st["context"][sel], st["mask"][sel], actions=actions)
+    return policy.consume(zs, h[rr, pw, ss], tokens, st["context"][sel], st["mask"][sel], actions=actions)
 
 
 def ppo_update(rollout: Rollout, world: EconomyBatch, policy: PolicyNet, critic: CriticNet,
@@ -106,6 +125,9 @@ def ppo_update(rollout: Rollout, world: EconomyBatch, policy: PolicyNet, critic:
             mask = acted[:, worlds]
             if mask.any():
                 pub, priv, adj, _ = snapshot_inputs(world, rollout, worlds, R)
+                mem = memory_sequence(policy, world, rollout, worlds, R) if policy.memory_size else None
+                if mem is not None:
+                    priv = torch.cat([priv, mem.reshape(-1, *mem.shape[2:])], dim=-1)
                 z, h = policy.embed(pub, priv, adj)
                 z, h = z.view(R, W, N, -1), h.view(R, W, N, -1)
                 new_lp = torch.zeros(R, W, N)
@@ -115,7 +137,7 @@ def ppo_update(rollout: Rollout, world: EconomyBatch, policy: PolicyNet, critic:
                     if sel.numel() == 0:
                         continue
                     pw = pos[st["b"][sel]]
-                    out = _evaluate_kind(policy, kind, st, sel, z, h, pw)
+                    out = _evaluate_kind(policy, kind, st, sel, z, h, pw, mem)
                     new_lp = new_lp.index_put((st["r"][sel], pw, st["s"][sel]), out.log_prob, accumulate=True)
                     entropies.append(out.entropy)
                 log_ratio = new_lp[mask] - old_lp[:, worlds][mask]

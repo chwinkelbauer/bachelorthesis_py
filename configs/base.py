@@ -36,6 +36,7 @@ class PreferenceConfig:
     goods_valued_range: Tuple[int, int] = (0, 0)          # (lo, hi): each agent values n ~ U{lo..hi} goods; (0, 0) = goods_valued
     tier_weights: Tuple[float, ...] = ()                  # mean utility weight multiplier per tier (last entry for higher tiers); () = off
     tier_weight_sigma: Tuple[float, ...] = ()             # log-normal spread of that multiplier per tier, per agent and good; () = fixed
+    continuous_subsistence: bool = False                  # subsistence goods: ln(1 + c - gamma) also below gamma (hunger hurts)
     min_processed_valued: int = 0                         # with subsistence: at least this many valued goods are processed (tier >= 1)
 
 
@@ -86,7 +87,9 @@ class MarketConfig:
     capacity: float = 40.0                                # max carried weight per agent
     full_information: bool = False                        # partners' preferences observable
     spoilage: bool = True
-    death_after: int = 5                                  # B+: consecutive rounds below subsistence until death
+    death_after: int = 5                                  # B+: deprived rounds until death (consecutive, or hunger debt)
+    hunger_debt: bool = False                             # B+: death when cumulative missing food (rounds of need) >= death_after
+    respawn_after: int = -1                               # B+: a dead agent's slot is refilled after this many empty rounds (-1 = never)
     death_penalty: float = 0.0                            # B+: one-off reward -p in the round an agent dies (0 = off)
 
 
@@ -106,6 +109,8 @@ class ModelConfig:
     gnn_layers: int = 2
     attn_heads: int = 4
     transformer_layers: int = 2
+    memory: bool = False                                  # per-good GRU memory over rounds, fed with own trade experience
+    memory_size: int = 16                                 # memory state per agent and good
 
 
 @dataclass

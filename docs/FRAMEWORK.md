@@ -4,7 +4,7 @@
 > parameters or the experimental design must update the affected sections and add a line to the
 > [Changelog](#13-changelog) in the same change. If code and this document disagree, that is a bug.
 >
-> Last updated: 2026-10-13 · Implemented stages: **A, B, C, D** · Experiments: stage A (3 seeds + 1 partial) done; stage B redesigned (learning sessions, basic-needs preferences), not yet re-run; C and D not yet run
+> Last updated: 2026-10-14 · Implemented stages: **A, B, C, D** · Experiments: stage A (3 seeds + 1 partial); stage B in three designs (B, B2, B3 + perishability treatment, 2 seeds): barter, no money; C and D not yet run
 
 ---
 
@@ -53,13 +53,14 @@ no reward mentions money or trade**:
 | Training / evaluation CLI | implemented | `scripts/train.py`, `scripts/evaluate.py` |
 | Run report: curves vs. paired null, stage timeline, change points, summary (also for interrupted runs) | implemented | `scripts/report.py` |
 | Cross-run summary: table of all runs + IQM/bootstrap CI across seeds per condition | implemented | `scripts/summarize.py` |
-| Agent memory (GRU across rounds) | **planned** | — |
+| Agent memory: per-good GRU over rounds, fed with own trade experience (`model.memory`, off by default) | implemented | `agents/policy.py`, `economy/world.py`, `learning/rollout.py`, `learning/ppo.py` |
 | Stage C: harvesting raw goods (access, skills), division-of-labour metrics | implemented | `economy/production.py`, `economy/world.py` |
 | Stage D: public ledger (contributions, bilateral balances), on/off switch, before/after metrics | implemented | `economy/world.py`, `economy/observations.py` |
 | Config overrides from the command line (`--set key=value`) | implemented | `configs/base.py`, `scripts/` |
 | Resumable training (`--resume`; atomic checkpoints with optimizer, iteration, elapsed time, RNG states) | implemented | `learning/trainer.py`, `scripts/train.py` |
 | Curriculum: warm start between stages (`--init`) and learning sessions within a run (technology level + death-threshold ramp) | implemented | `learning/trainer.py`, `configs/presets.py`, `scripts/train.py` |
-| Multi-seed sweep and report | **planned** | — |
+| Experiment queue runner (unattended nights: parallel jobs, barriers, logs, stop file) | implemented | `scripts/run_queue.py`, `configs/night_queue.txt` |
+| Multi-seed sweep and report | partial: queue runner + `scripts/summarize.py` | — |
 | Benchmark for production economies (dynamic planner / steady state) | **planned** | — |
 
 ---
@@ -74,6 +75,7 @@ t = 0..R−1. All randomness is redrawn for every episode, so no convention can 
 - **Properties** (no labels), drawn per world:
   - weight w_k ~ LogUniform[0.2, 2.0]
   - spoilage δ_k ~ U[0, 0.10] per round
+  - spoilage treatment `B_perishable` (factor F4): δ_k ~ U[0, 0.25]
   - consumable flag: always true for τ_k ≥ 1; true with probability 0.5 for raw goods (presets B–D: probability 1, so every raw good can be a subsistence good; with 0.5, 6% of worlds had no consumable raw good)
 - **Recipe DAG:** a good k with τ_k ≥ 1 has 1–3 inputs from lower tiers, at least one of them from tier τ_k − 1. Its input coefficients are a_kj ~ U[0.5, 2] units of j per unit of k.
 - **Property feature vector** (per good token): (ln w_k, δ_k, τ_k / L, 1[τ_k = 0], consumable_k).
@@ -130,16 +132,30 @@ In stage A the argument x is *holdings*. From stage B on it is the *consumption 
 **Consumption:**
 - Per good, the agent chooses keep or consume, and a fraction a ∈ (0,1) of its holding (c_k = a·x_k).
 - Consuming goods with α_ik = 0 is masked (it is a dominated action).
-- **Flow utility:** u_i(c) = Σ_k α_ik ln(1 + max(c_k − γ_ik, 0)).
+- **Flow utility:** u_i(c) = Σ_k α_ik ln(1 + max(c_k − γ_ik, 0)) (default), or with **continuous subsistence** (`preferences.continuous_subsistence`, presets B–D since 2026-10-14) u_i(c) = Σ_k α_ik ln(1 + c_k − γ_ik), which requires γ < 1.
+  - Why: with the kink, eating below the need is as good as eating the need (both 0), so skipping meals is free until death; agents learned to fast up to 4 rounds and eat in lumps (feast-and-fast, §11). For the B preset preferences, feast-and-fast beats steady eating for 100% of agents with the kink and for 0% with the continuous form (mean −0.17 per 5 rounds).
+  - A fully hungry round now costs α ln(1 − γ): mean −0.085 (range 0 to −0.66), against typical flow utilities of 0.15–0.18. Goods without a need (γ = 0) are unaffected, so stage A is unchanged. By concavity, steady consumption beats lumpy consumption, and eating mistakes are penalised in the same round (dense feedback) instead of only by a later death.
+  - Flow utilities of runs with continuous subsistence include hunger costs and are not comparable to earlier runs; compare each with its own no-trade counterfactual.
 
 **Deprivation and death:**
-- A round counts as *deprived* if any subsistence good is consumed below γ_ik.
-- After `death_after` = 5 consecutive deprived rounds, the agent dies: it leaves the matching, its holdings perish, and it receives no further reward. During the learning sessions (§6.1) the threshold is 20, then 10.
-- **Death penalty (optional, `market.death_penalty` = p, default 0):** a one-off reward −p in the round an agent dies. Without it, dying costs only the lost future flow utility (≈ 33 × the mean flow utility at γ_RL = 0.97), which untrained agents barely experience. It is a one-off cost, not a per-round bonus for being alive, so bare survival stays worth 0. It refers to no good and no trade, and the money metrics do not use rewards. Risk: a large p could induce precautionary hoarding of the subsistence good (autarky, or a raw good that looks like money out of fear of death), so p stays small and identical across conditions. **Status:** A/B test with p = 0.5 (about one round of good consumption) vs. p = 0, both with learning sessions (user decision 2026-10-13).
+- **Hunger debt** (`market.hunger_debt`, presets B–D since 2026-10-14): the agent carries a debt d_i in *rounds of missing food*, d_i ← max(0, d_i + 1 − c_ik / γ_ik) (mean over its subsistence goods; one in all presets). Eating half the need adds 0.5, eating nothing adds 1, eating more than the need repays debt. The agent dies when d_i ≥ `death_after`. The private observation shows d_i / `death_after`.
+  - Why (2026-10-14): the old rule counted a round as *deprived* if any subsistence good was consumed below γ (eating 99% of the need = eating nothing; 10–18% of deprived rounds in the B3 policies were such partial meals) and reset the counter after one adequate meal (chronic undernutrition never killed). Hunger debt is continuous and cumulative, like an energy deficit.
+- **Old rule** (default, `hunger_debt` off): a round is *deprived* if any subsistence good is consumed below γ_ik; the counter resets after a non-deprived round.
+- When the debt (or the consecutive count) reaches `death_after` = 5, the agent dies: it leaves the matching, its holdings perish, and it receives no further reward. During the learning sessions (§6.1) the threshold is 20, then 10.
+- **Death penalty (optional, `market.death_penalty` = p, default 0):** a one-off reward −p in the round an agent dies. Without it, dying costs only the lost future flow utility (≈ 33 × the mean flow utility at γ_RL = 0.97), which untrained agents barely experience. It is a one-off cost, not a per-round bonus for being alive, so bare survival stays worth 0. It refers to no good and no trade, and the money metrics do not use rewards. Risk: a large p could induce precautionary hoarding of the subsistence good (autarky, or a raw good that looks like money out of fear of death), so p stays small and identical across conditions. **Status:** A/B test (B2, §12): p = 0.5 led the early learning but then drifted into hoarding (survival 0.38 vs. 0.46 without). **Presets B–D now use p = 0.5** (user decision 2026-10-13, "always have a penalty for now"), together with a stronger entropy bonus (0.03, §4.3) against the policy freezing that accompanied the drift.
 
 **Technology level** (`production.max_tier`, default −1 = all tiers): goods above this tier cannot be produced (their recipe rows are zero, so processing is masked). It is used only by the learning sessions (§6.1).
 
+**Newcomers** (`market.respawn_after` = k, presets B–D: 2; −1 = off; since 2026-10-14):
+- A slot that has been empty for k rounds gets a newcomer at the start of the next round (begin of round, before income).
+- The newcomer keeps the slot's **position**: network node, income good, income size and schedule (stage B), harvest access and skills (stage C), like someone taking over a farm. So every raw good keeps an earner and the feasibility scaling stays valid; the newcomer's needs γ are new, so aggregate need drifts slightly (the surplus κ = 2 absorbs this).
+- It draws **new preferences** (support, weights, need) exactly like the round-0 agents, and **starts like them**: one income lump (and harvest lump) plus the subsistence reserve, debt 0.
+- It has **no history**: empty experience and memory, and its public ledger record starts at 0 (the predecessor's record is archived, so the ledger still balances).
+- Why: dead agents left the market for good, so with survival ≈ 0.5 half of the market was gone by round 24. Trade chains broke and trade fell partly for that reason, which confounded the money metrics. With newcomers the market stays ≈ 95% full (barter heuristic: 0.95–0.96 vs. 0.72–0.78), and newcomers must learn the existing conventions, as with entry in Kiyotaki–Wright economies with turnover.
+- Learning: each life is its own trajectory. A death ends it (terminal for GAE, death penalty), and the newcomer's rounds start fresh, so no value leaks between the two lives. Cost: the full economy runs ≈ 2× slower per iteration (more living agents, more decisions).
+
 **Round order:**
+0. Newcomers enter slots that have been empty for k rounds.
 1. Income arrives (capacity-limited).
 2. Labour: process or idle.
 3. Matching + negotiation + execution.
@@ -163,7 +179,7 @@ In stage A the argument x is *holdings*. From stage B on it is the *consumption 
 - **Control `C_no_specialization`** (F2 knock-out): full access and σ = 0 (identical yields for everyone).
 
 ### 3.6 Stage D: public ledger (F6, "money is memory")
-- **Physical record:** the world always keeps, per agent and good, the cumulative **net contribution** (given − received) and, per pair, the **bilateral balance** (net units i received from j). Contributions sum to 0 per good, and balances are antisymmetric.
+- **Physical record:** the world always keeps, per agent and good, the cumulative **net contribution** (given − received) and, per pair, the **bilateral balance** (net units i received from j). Contributions sum to 0 per good (counting the archived records of agents replaced by newcomers, `retired_contribution`), and balances are antisymmetric.
 - **Ledger on:** in trade mode, the decider additionally observes, per good, sign(v)·ln(1+|v|) of its partner's net contribution and of their bilateral balance (the two reserved token slots), plus the ledger flag in the context. Gift/credit relationships thereby become observable and enforceable by reputation.
 - **Ledger off:** anonymity; the slots are 0.
 - **Switch:** the state in round t is `enabled` XOR (switch_round ≥ 0 and t ≥ switch_round).
@@ -218,7 +234,7 @@ $$\text{give}_k = a_k\,x_{o,k}\;[d_k=\text{give}], \qquad \text{want}_k = a_k\,x
 | decision context | round/(R−1) (A only), mode one-hot (trade/labour/consume), turn one-hot (trade), is_proposer, has_offer, ΔU_total if accepted, own load/C, partner load/C, FI, rounds-to-next-income/P, deprivation/D, ledger on | 16 |
 
 Notation:
-- MU = α_k / (1 + max(x_k − γ_k, 0)).
+- MU = α_k / (1 + max(x_k − γ_k, 0)); with continuous subsistence MU = α_k / (1 + x_k − γ_k).
 - Input value v_ik = max over goods using k directly of α_i,out.
 - FI = 1 under full information, else 0.
 - recv/give are the standing offer in **absolute units** from the decider's perspective.
@@ -245,6 +261,14 @@ The layout is identical across stages, so weights can be carried A → B → C (
 - **Critic:** V_i = MLP([h_i, mean over living j of h_j]), with h = GATv2^L(DeepSets(private tokens)). It has separate parameters from the policy.
 - **Hidden size:** 64.
 
+**Agent memory (optional, `model.memory`, size `model.memory_size` = 16; approved 2026-10-14).** Why: goods and preferences are redrawn every episode, so *which goods others readily accept* (Menger's saleability) can only be learned within an episode, and that requires memory. Without it, an agent cannot know that its last partners all asked for the same good.
+- **Experience features** (private, per good, from the last round; `world.experience`, log units): units received, units given, units a partner *asked for* (want side of offers made to the agent), units a partner *offered* (give side). Reset at the start of an episode.
+- **Per-good GRU:** μ_ik,t = GRUCell(μ_ik,t−1, [experience_ik,t, properties_k, ln(1 + x_ik,t)]), μ_ik,0 = 0, shared over goods (permutation-equivariant). μ is appended to the agent's own goods tokens (agent embedding) and to its decision tokens (per-good heads), so "good k is in demand" reaches the decision for good k directly.
+- **Training:** the PPO update recomputes μ over all rounds of the minibatch worlds from the stored experience and snapshots, so gradients flow through time (truncated at the 24-round rollout, as in recurrent MAPPO).
+- **Critic:** sees the raw experience features in addition to all private tokens.
+- **Compatibility:** with memory off the model and all runs are unchanged (bit-identical smoke runs before/after). Warm starts into a memory model zero-pad the new input weights (`learning/trainer.load_compatible`), so the model initially computes exactly what the source computed (tested). Cost: ≈ 1.1× time per iteration.
+- **Role in the design:** private memory of one's own trades vs. the public ledger of stage D separates "learning saleability" from "money is memory" (F6).
+
 ### 4.3 MAPPO (`learning/ppo.py`)
 - **RL step = one agent-round.** The composite action is labour + up to two trade decisions + consumption, with log π = the sum of the parts.
 - **Masking:** agents dead at the start of a round are masked out. Agent-rounds without a decision still train the critic.
@@ -252,7 +276,7 @@ The layout is identical across stages, so weights can be carried A → B → C (
   - Exchange economy: terminal after R rounds, γ = 1.
   - Production economy: truncated after R rounds with bootstrap V(s_R), γ = 0.97.
 - **Normalisation:** advantages are normalised over acting agent-rounds.
-- **Loss:** clipped surrogate (ε = 0.2) + 0.5·MSE(V, return) − 0.01·mean entropy (over all decisions).
+- **Loss:** clipped surrogate (ε = 0.2) + 0.5·MSE(V, return) − c_H·mean entropy (over all decisions), c_H = 0.01 (stage A) and **0.03 in presets B–D**. In the B2 runs with 0.01, policy entropy collapsed from 0.6 to 0.1–0.2 and trade fell with it (§11).
 - **Optimisation:** Adam with lr 3e-4, gradient-norm clipping at 0.5, 4 epochs, 4 minibatches over whole worlds.
 - **Storage:** each decision is stored with its exact non-differentiable inputs (tokens, context, masks). The differentiable embeddings are recomputed from the round snapshots.
 - **No behavioural cloning, no expert, no shaping.**
@@ -319,7 +343,8 @@ The layout is identical across stages, so weights can be carried A → B → C (
 | money_hhi | per world, HHI of the shares of passed_bk/S_bk over goods (worlds with pass-through) |
 | money_good_{spoilage,weight,tier}_rank | within-world rank of the good with the largest pass-through share |
 | traded_share_of_supply, consumed_share_of_supply | market depth, consumption |
-| mean_flow_utility, survival_rate | welfare per living agent-round, share of agents alive at the end |
+| mean_flow_utility, survival_rate | welfare per living agent-round; share of the agents present at round 0 still alive at the end (unchanged meaning without newcomers) |
+| births, death_rate, population_share | newcomers per world; deaths per living agent-round; share of agent slots occupied over the rollout (market thickness) |
 | labour_specialization | mean over working agents of the HHI of their non-idle labour choices (1 = always the same activity). Read relative to `C_no_specialization` and the null: random labour already gives about 0.48 with 2 accessible goods vs. 0.30 with full access |
 | idle_share, harvest_share, process_share | composition of labour |
 | pass_through_rate_before/after, trade_rate_before/after | (D, if switch_round ≥ 0) the same measures in rounds before / from the ledger switch |
@@ -388,10 +413,10 @@ The thresholds are **provisional** (`MetricsConfig`) and will be fixed before th
 ### 6.3 Factors and hypotheses
 | Factor | Parameter | Hypothesis |
 |---|---|---|
-| F1 Preference sparsity (double coincidence) | `preferences.goods_valued`, `dirichlet_beta` | Sparser preferences → more money (Jevons) |
+| F1 Preference sparsity (double coincidence) | `preferences.goods_valued` / `goods_valued_range`, `dirichlet_beta`, `goods.goods_per_tier`; treatment presets `B_rare`, `B_rare_perishable` | Sparser preferences → more money (Jevons) |
 | F2 Resource access / skills (stage C) | `production.access_goods_per_agent`, `skill_sigma`; control `C_no_specialization` | No division of labour → no money |
 | F3 Production depth | `goods.goods_per_tier` | Deeper production graphs → earlier, stronger money (new hypothesis) |
-| F4 Holding costs | `goods.spoilage_range`, `weight_range`, `market.spoilage` | The good with the lowest holding cost becomes money (Menger's saleability) |
+| F4 Holding costs | `goods.spoilage_range`, `weight_range`, `market.spoilage`; treatment preset `B_perishable` (δ ~ U[0, 0.25]) | The good with the lowest holding cost becomes money (Menger's saleability); perishable food creates a store-of-value demand for durable goods (Kiyotaki–Wright storage costs) |
 | F5 Search friction | `network.kind`, `degree` | Inverted U |
 | F5b Timing mismatch (stage B) | `production.income_period_range` (lumpy vs. (1,1)) | Lumpy income → store-of-value demand → more money |
 | F6 Memory / anonymity (stage D) | `ledger.enabled`, `ledger.switch_round` | A public ledger substitutes for money (pass-through falls when the ledger is on and rises after it is switched off) |
@@ -405,6 +430,7 @@ The thresholds are **provisional** (`MetricsConfig`) and will be fixed before th
 | goods | raw_consumable_prob / recipe_inputs / recipe_coef_range | 0.5 / (1,3) / (0.5, 2.0) |
 | preferences | goods_valued m / dirichlet_beta | 3 / 1.0 |
 | preferences | subsistence / subsistence_goods / subsistence_range / subsistence_max_tier | off / 1 / (0.5, 1.5) / 1 |
+| preferences | continuous_subsistence | off (presets B–D: on) |
 | preferences | goods_valued_range / tier_weights / tier_weight_sigma / min_processed_valued | (0, 0) = fixed m / () = off / () = fixed / 0 |
 | endowments (A) | goods_per_agent / amount_range / consumable_only | 2 / (2, 10) / true |
 | production (B) | income / income_goods_per_agent / income_flow_range / income_period_range | off / 1 / (1, 2) / (1, 4) |
@@ -414,10 +440,12 @@ The thresholds are **provisional** (`MetricsConfig`) and will be fixed before th
 | curriculum | sessions | () = none |
 | ledger (D) | enabled / switch_round | off / −1 (never) |
 | network | kind / degree / rewire_prob | small_world / 4 / 0.1 |
+| market | hunger_debt / respawn_after | off / −1 (presets B–D: on / 2) |
 | market | economy / n_agents / rounds / capacity / full_information / spoilage / death_after / death_penalty | exchange / 12 / 8 / 40 / false / true / 5 / 0 |
 | model | hidden / gnn_layers / attn_heads / transformer_layers | 64 / 2 / 4 / 2 |
+| model | memory / memory_size | off / 16 |
 | ppo | worlds / iterations / lr / epochs / minibatches / clip | 64 / 300 / 3e-4 / 4 / 4 / 0.2 |
-| ppo | gamma / gae_lambda / value_coef / entropy_coef / max_grad_norm | 1.0 / 0.95 / 0.5 / 0.01 / 0.5 |
+| ppo | gamma / gae_lambda / value_coef / entropy_coef / max_grad_norm | 1.0 / 0.95 / 0.5 / 0.01 (presets B–D: 0.03) / 0.5 |
 | ppo | benchmark_every / checkpoint_every | 10 / 50 |
 | metrics | no_use_alpha / autarky_trade_rate / indirect_share / excess_resale / excess_hhi | 1e-6 / 0.02 / 0.05 / 0.05 / 0.15 |
 
@@ -427,8 +455,11 @@ The thresholds are **provisional** (`MetricsConfig`) and will be fixed before th
 | `A` | Stage A default (small world, private preferences) |
 | `A_complete` | Stage A, complete network (minimal search friction) |
 | `A_full_info` | Stage A, observable partner preferences |
-| `B` | Stage B: economy = production, income on (P ∈ {1..4}), processing on, subsistence on one **raw** good with γ ~ U[0.2, 0.5], all raw goods consumable, 2–5 valued goods, tier weights (0.2, 1, 2) with log-spreads (0.25, 0.75, 1.0), starting reserve 10 rounds, learning sessions S1–S3 (§6.1), rounds = 24, worlds = 32, γ_RL = 0.97 |
+| `B` | Stage B: economy = production, income on (P ∈ {1..4}), processing on, subsistence on one **raw** good with γ ~ U[0.2, 0.5], all raw goods consumable, 2–5 valued goods, tier weights (0.2, 1, 2) with log-spreads (0.25, 0.75, 1.0), starting reserve 10 rounds, learning sessions S1–S3 (§6.1), death penalty 0.5, hunger-debt death rule, newcomers after 2 empty rounds, continuous subsistence utility, entropy coefficient 0.03, rounds = 24, worlds = 32, γ_RL = 0.97 |
 | `B_constant_income` | `B` with constant income (P = 1); control for F5b |
+| `B_perishable` | `B` with spoilage δ ~ U[0, 0.25] instead of U[0, 0.10]; treatment for F4 |
+| `B_rare` | `B` with 15 goods (6 / 5 / 4 per tier) and 2–3 valued goods per agent; treatment for F1. Neighbour pairs whose incomes are mutually useful (incl. as inputs): 0.28 instead of 0.66 (direct consumption only: 0.04 instead of 0.23); 24% of agents value no processed good (`min_processed_valued` stays off). Runs ~1.15× slower |
+| `B_rare_perishable` | `B_rare` + spoilage U[0, 0.25]: F1 × F4 (Kiyotaki–Wright-like) |
 | `C` | `B` without income, with harvesting (access 2 of 4 raw goods, skill σ = 0.5) |
 | `C_no_specialization` | `C` with full access and σ = 0; control for F2 |
 | `D` | `C` with the public ledger on |
@@ -436,15 +467,15 @@ The thresholds are **provisional** (`MetricsConfig`) and will be fixed before th
 
 ## 9. Code map
 ```
-configs/    base.py (dataclasses), presets.py (named conditions)
+configs/    base.py (dataclasses), presets.py (named conditions), night_queue.txt (job list for scripts/run_queue.py)
 economy/    goods.py, preferences.py, endowments.py, production.py, network.py, trade.py, observations.py,
             ledger.py (trade ledger + FlowTracker), world.py (exchange + production economy)
 agents/     layers.py (GATv2, DeepSets), policy.py (policy + critic), baselines.py (nulls, ZI-C, counterfactuals)
 learning/   rollout.py (phases + protocol), ppo.py (MAPPO), trainer.py, evaluate.py (held-out eval + paired null), seeding.py
 analysis/   benchmarks.py, money_metrics.py, changepoints.py, stats.py
-scripts/    train.py, evaluate.py, report.py, summarize.py (CLI)
+scripts/    train.py, evaluate.py, report.py, summarize.py, run_queue.py (CLI)
 tests/      test_economy.py, test_analysis.py, test_learning.py, test_production.py (B, C), test_ledger.py (D)
-docs/       FRAMEWORK.md (this file)
+docs/       FRAMEWORK.md (this file), HOW_IT_WORKS.md (detailed plain-language explanation, kept in sync)
 results/    run outputs (git-ignored)
 ```
 
@@ -461,6 +492,7 @@ python -m scripts.train --resume --run-dir results/B_s0   # continue an interrup
 python -m scripts.train --preset B --seed 0 --set curriculum.sessions=[]   # control: no learning sessions
 python -m scripts.report --run-dir results/A_s0           # -> report.png + JSON summary (stages, change points, evaluation)
 python -m scripts.summarize --out results/summary.md      # all runs in one table + aggregates across seeds
+python -m scripts.run_queue configs/night_queue.txt --parallel 2   # unattended queue (start detached; results/queue.log)
 ```
 **Report figure:**
 - Small multiples over training iterations (benchmark iterations only), one y-axis each: the learned policy (blue, solid, markers) vs. the paired null (orange, dashed), and change points (dotted).
@@ -491,7 +523,7 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
 ## 11. Assumptions, limitations, open issues
 - **Stage A has no time dimension beyond R = 8 rounds.** Only money's transaction role can appear there (by design, §6.1).
 - **Agent embeddings are computed once per round from the round-start state.** Phase-specific changes (after labour or trade) enter only through the decision tokens, which use current holdings. This is an approximation: agents observe their neighbourhood at the start of the round.
-- **No agent memory across rounds yet.** The standing offer is the only negotiation history. With the ledger off, agents therefore have neither public *nor private* memory of past trades, so F6 currently contrasts "public record" with "no memory at all". A GRU memory (private memory) is planned to separate the two.
+- **Agent memory is optional** (`model.memory`, §4.2) and off in all presets so far. Without it, the standing offer is the only negotiation history, and with the ledger off agents have neither public nor private memory of past trades. The memory treatment (night 4) separates private memory from the public ledger (F6).
 - **Stage-B pilot (seed 0, no reserve), diagnosed at iteration 50.** Overall survival was 11%:
   - Agents that earn their subsistence good, or all of its raw inputs, survived (100% / 94%).
   - The 89% that need inputs from others all died, at round ≈ 4.
@@ -504,6 +536,15 @@ Start-Process python -ArgumentList "-u","-m","scripts.train","--preset","A","--s
   - In aggregate, dependents receive more than they need, but only 56% ever receive their subsistence good: many have no neighbour who earns it, and goods must travel along chains via intermediaries.
   - Survival is therefore gated by the very coordination problem money solves, and learners die before discovering it. **Decided 2026-10-13:** learning sessions with a death-threshold ramp and technology unlocking, plus raw-only subsistence with low-utility basic goods (§3.2, §6.1). Not yet tested in training.
   - The warm-started run, continued to 300 iterations, shows that survival does improve, but only slowly (0.10 → 0.26), so longer training alone is impractical.
+- **Why trade falls and no money forms in B2 (diagnosed 2026-10-13 on the final B2 policies, 4 × 32 held-out economies):**
+  - *Exploration collapse:* policy entropy fell from 0.6 to 0.1–0.2 (entropy coefficient 0.01), and the trade rate fell with it. → entropy coefficient 0.03 (presets B–D).
+  - *Eating mistakes:* in 31–42% of deprived rounds the agent held enough of its subsistence good but ate too little; when it held enough, it ate a median 2.2× its need (28% of its stock), emptying the reserve within a few rounds. Consumption is a fraction of the stock, so hitting "need / stock" exactly is hard to learn. Deaths thin the market, and the trade rate falls when session 3 tightens the death rule. Proposed fix (automatic subsistence consumption; learned consumption above need) **not adopted** for now (user decision); deaths therefore still include eating mistakes.
+  - *No acceptance of unusable goods:* opening offers are accepted 17% of the time; offers that give the partner nothing usable only 3%. Agents accept only goods they can use, which rules out a medium of exchange. 45% of trades are double coincidences, so the need for a medium is weak, and all goods are fairly durable (δ ≤ 0.10), so storing one's own food is cheap and no good stands out as a store of value. → perishability treatment `B_perishable` (F4). A hand-coded barter policy survives 0.43 with perishable goods vs. 0.53 without, so survival is harder by construction; conditions are compared on the money metrics.
+  - Not adopted for now (proposed): rarer double coincidence (12 goods, 2–4 valued; F1), lumpier income (P 1–8; F5b), 24 agents, a softer death ramp (20 → 10 → 7 → 5).
+- **Feast-and-fast: agents game the death rule (diagnosed 2026-10-14 on B3).** Death requires `death_after` = 5 *consecutive* deprived rounds, and utility counts only consumption *above* γ (max(c − γ, 0)), so eating exactly γ gives 0, while skipping meals costs nothing until the 5th round. Eating kγ once every k ≤ 5 rounds yields α ln(1 + (k − 1)γ) > 0, i.e. lumpy eating strictly beats steady eating.
+  - Evidence (held-out, 4 × 32 economies): B3 survivors eat ≥ γ in only 61% (seed 0) / 50% (seed 1) of their rounds, and 3.1–3.8× γ when they eat; the longest hungry streak of 33% / 51% of survivors is exactly 4 rounds (one short of death). In 73% / 88% of deprived rounds the agent held enough food. B2 (no penalty, entropy 0.01) showed the pattern weakly (15% at streak 4); with perishable goods it is weak too (11–12%), because stored food spoils.
+  - Consequence: B3's higher survival is partly rule gaming, not better provisioning, and the need to trade every round is weakened. A model fix is proposed (CLAUDE.md §8).
+- **No store-of-value selection (2026-10-14):** about 20% of held units are goods without any use for the holder, but their mean spoilage equals that of all held goods (B3: 0.042 vs. 0.045; B3_perishable: 0.10 vs. 0.11). Offers that give the partner nothing usable are accepted 2–4% (B3) and 5–6% (B3_perishable) of the time. Perishability alone therefore did not make agents hold durable goods as a medium or store of value.
 - **Untrained stage-B agents mostly die** (random policy: about 7% survive 24 rounds), because subsistence requires consuming ≥ γ every round. After the feasibility scaling (§3.4), these deaths are behavioural, not scarcity.
 - **Consuming goods with α = 0 is masked** (dominated); such goods can still be held, processed or traded.
 - **The immediate ΔU in the stage-B ledger** is a holdings-utility proxy. The double-coincidence share in B is therefore indicative only.
@@ -523,9 +564,11 @@ All simulations are stopped. Cross-run table: `python -m scripts.summarize` (wri
 | **A** (pure exchange) | seeds 0, 1, 2 (300 iterations); seed 3 stopped at the iteration-100 checkpoint (resumable) | **Efficient barter + purposeful indirect exchange, no stable money.** Efficiency vs. Walras 0.54 [0.53, 0.56] vs. ZI-C 0.23. Resale 0.39 [0.37, 0.42] vs. stronger null 0.21. Costly resale 0.39. HHI 0.33 [0.30, 0.38]: an excess over the null of +0.06/+0.14/+0.07, where +0.15 is needed. Money conventions appear transiently late in training and dissolve again. |
 | **B** warm-started from A | seed 0, 300 iterations | **Barter with clear gains from trade, survival too low.** Flow utility 0.212 vs. 0.161 without trade (+32%) and 0.172 with random trade. Survival 0.25 vs. 0.15 / 0.17, rising slowly (~+0.05 per 100 iterations). Pass-through 0.16 below the stronger null 0.20. The HHI of the little pass-through there is lies above the null (+0.09 to +0.16). |
 | **B** from scratch | seed 0, stopped at iteration 69 | Autarky collapse (trade rate → 0). |
+| **B2** (redesign: learning sessions + basic-needs preferences) warm-started from A | seed 0, 300 iterations, death penalty 0 and 0.5 | **Survival 0.46 (greedy 0.50)** vs. 0.25 in the old design; still rising, gate 0.5 not reached. Barter with gains from trade (+37% flow utility vs. no trade); pass-through 0.22 vs. null 0.19 (+0.03, threshold +0.05); no money (HHI below the null). The **death penalty 0.5 hurt**: survival 0.38, trade rate falling to 0.25, idle labour 74% (hoarding/autarky drift). |
+| **B3** (B2 + death penalty 0.5 + entropy 0.03) and **B3_perishable** (+ spoilage U[0, 0.25], F4), warm from A | seeds 0 and 1, 300 iterations each (night 2) | **B3 passes the survival gate nominally** (0.51 / 0.59; greedy 0.61 / 0.74), but largely by **gaming the death rule** (feast-and-fast, §11). Trade 0.34 / 0.25, pass-through *below* the null, HHI at or below the null: barter. **Perishability did not create money:** survival 0.33 / 0.35, trade 0.34 / 0.40, pass-through and HHI below the null; held goods without use are not more durable than average. |
 | **C, D** | — | Not run; they depend on a working stage B. |
 
-**Next step:** the stage-B fix is implemented (learning sessions + basic-needs preferences, §3.2, §6.1), not yet trained. The B runs above used the old preset; their `config.json` keeps the old settings, so they still evaluate and resume as before. Next: B with sessions warm-started from A (seed 0), once without and once with a death penalty of 0.5 (in parallel); then the no-session control, C and D.
+**Next step:** night 3 (prepared 2026-10-14, starts on the user's command): B4 = preset B with continuous subsistence, hunger debt and newcomers (seed 0, warm from A_s0); tonight only the two corners of the 2×2 screening, `B4` and `B4_rare_perishable` (F1 × F4), ~6.5 h, because newcomers make iterations ≈ 2× slower; `B4_rare` and `B4_perishable` follow in night 4. Pre-flight (barter heuristic, debt + newcomers): survival of the initial agents 0.55 / 0.48 / 0.54 / 0.46 for B / perishable / rare / rare + perishable, market 95–96% full. Then the memory treatment, C and D.
 
 ### Night 1 summary**Pilot A, seed 0** (300 iterations, pre-unification features; `results/pilot_A_s0_old_features`, held-out evaluation over 4 batches × 64 economies):
 
@@ -627,6 +670,39 @@ All simulations are stopped. Cross-run table: `python -m scripts.summarize` (wri
 
 **A, seed 3** (`results/A_s3`, stopped at the iteration-100 checkpoint to end the session; resumable with `--resume --run-dir results/A_s3`): at iteration 100, efficiency 0.48, resale 0.29 vs. 0.19, HHI 0.38 vs. 0.23, indirect exchange. It matches seeds 0–2 at the same stage of training. Not evaluated (partial).
 
+**Night 2 (2026-10-13/14): B3 and B3_perishable, seeds 0 and 1** (queue runner, 21:01–03:32, no failures; 3.1–3.3 h per run with two in parallel). B3 = preset B (learning sessions, raw subsistence, random tier weights) + death penalty 0.5 + entropy coefficient 0.03; B3_perishable = B3 with spoilage U[0, 0.25] (F4). Warm starts from A_s0 / A_s1. Held-out evaluation, learned stochastic policy (greedy in brackets):
+
+| run | survival | flow utility (no trade) | trade rate | pass-through (null) | HHI (null) | idle labour | stage |
+|---|---|---|---|---|---|---|---|
+| `B3_fromA_s0` | 0.507 (0.608) | 0.175 (0.128) | 0.336 | 0.181 (0.200) | 0.292 (0.306) | 0.55 | barter 4/4 |
+| `B3_fromA_s1` | 0.592 (0.741) | 0.150 (0.110) | 0.249 | 0.142 (0.213) | 0.352 (0.273) | 0.70 | barter 4/4 |
+| `B3_perishable_fromA_s0` | 0.333 (0.358) | 0.172 (0.142) | 0.338 | 0.123 (0.131) | 0.375 (0.408) | 0.53 | barter 4/4 |
+| `B3_perishable_fromA_s1` | 0.353 (0.374) | 0.162 (0.131) | 0.396 | 0.112 (0.146) | 0.374 (0.392) | 0.58 | barter 4/4 |
+| `B2_fromA_s0` (reference) | 0.462 (0.501) | 0.189 (0.138) | 0.417 | 0.221 (0.190) | 0.253 (0.364) | 0.52 | barter 3/4 |
+
+- **The entropy fix worked:** policy entropy stayed at 1.0–1.3 (B2: fell to 0.15), and the penalty no longer led to an autarky drift (B2_penalty: survival 0.38, trade 0.25).
+- **Survival passes the gate, but for the wrong reason:** B3 survivors exploit the consecutive-rounds death rule (feast-and-fast, §11). Survival rises through session 3 (seed 1: 0.30 → 0.66) while trade falls (0.44 → 0.29).
+- **Trade still declines in session 3** (B3: 0.52–0.56 in session 1 → 0.35–0.39), though less than in B2.
+- **No money in any run:** pass-through excess over the null is −0.02 to −0.07 at evaluation, and the concentration of pass-through goods is at or below the null. Gains from trade remain (+37% / +36% flow utility vs. no trade in B3; +21% / +24% in B3_perishable).
+- **Perishability (F4):** more trade during sessions 2–3 (up to 0.58, brief indirect-exchange episodes around iterations 150–220 in seed 0), then a decline; survival flat at ≈ 0.33 (a barter heuristic also loses 10 points with perishable goods, §11). No selection of durable goods as store of value.
+
+**B2, seed 0, redesigned stage B** (learning sessions S1 raw only/death 20 → S2 tier ≤ 1/death 10 → S3 full economy; subsistence from raw goods; random tier weights; warm start from `results/A_s0`; 300 iterations, 3.8 h with both runs in parallel (62 / 49 / 35 s per iteration in sessions 1 / 2 / 3); held-out evaluation, learned stochastic policy):
+
+| | survival | flow utility | trade rate | pass-through (null) | HHI (null) | idle labour | stage |
+|---|---|---|---|---|---|---|---|
+| `B2_fromA_s0` (no penalty) | **0.462** (greedy 0.501) | 0.189 | 0.417 | 0.221 (0.190) | 0.253 (0.364) | 0.52 | barter |
+| `B2_penalty_fromA_s0` (p = 0.5) | 0.380 (greedy 0.395) | 0.178 | 0.250 | 0.123 (0.175) | 0.453 (0.386) | 0.74 | barter |
+| no-trade counterfactual (no penalty run) | 0.255 | 0.138 | 0 | — | — | 0.86 | autarky |
+| random-trade null (no penalty run) | 0.266 | 0.147 | 0.494 | 0.160 | 0.364 | 0.60 | barter |
+| old design `B_fromA_s0` (for comparison) | 0.253 | 0.212* | 0.352 | 0.163 (0.201) | 0.420 (0.326) | 0.62 | barter |
+
+\* Flow utilities are not comparable across the two designs (different preference weights); compare each with its own no-trade counterfactual: +37% (new) vs. +32% (old).
+
+- **The redesign works partially.** Survival in the full economy is 1.8× the old design and 1.8× the no-trade counterfactual, i.e. trade keeps agents alive. Session-3 survival rose steadily (means per 50 iterations 0.33 → 0.37 → 0.42); the gate (0.5) is reached only by the greedy policy.
+- **Session transitions are visible:** survival drops at each session start (0.85 → 0.52 at iteration 76; 0.61 → 0.32 at 151), as the death rule tightens and new goods appear. The curriculum did what it should: in sessions 1–2, trade rose (up to 0.50) and brief indirect-exchange episodes appeared (iterations 60, 100).
+- **Death penalty 0.5 hurt in the end.** The penalty run was ahead until about iteration 230 (indirect exchange at the end of session 2, trade rate 0.54; survival 0.42–0.44 in session 3), then drifted into hoarding: trade 0.43 → 0.25, idle labour 74%, pass-through below the null, survival 0.38. This matches the predicted risk (precautionary hoarding of the subsistence good). One seed only, so the comparison is suggestive, but the penalty is not adopted.
+- **No money:** the HHI of pass-through goods lies below the null in the no-penalty run; pass-through exceeds the null by +0.03 (threshold +0.05).
+
 **Pilot B, seed 0** (no reserve; `results/pilot_B_s0_no_reserve`, stopped at iteration 86): collapsed into autarky (trade rate 0.42 → 0.002, survival 9% → 14%). Diagnosis and fix in §11.
 
 ## 13. Changelog
@@ -709,3 +785,10 @@ All simulations are stopped. Cross-run table: `python -m scripts.summarize` (wri
   - All new options default to off; old configurations sample bit-identically.
   - 7 tests (49 in total). Also closed file handles in `scripts/summarize.py` and its test.
 - **2026-10-13:** `min_processed_valued` switched off in the presets (kept in the code; user decision); the calibration in §3.2 was re-measured. Added the optional death penalty `market.death_penalty` (default 0), to be A/B-tested with p = 0.5 (§3.4). 1 test (50 in total).
+- **2026-10-13:** B2 (redesigned stage B) trained warm from A_s0, with and without death penalty 0.5, and evaluated (results log §12): survival 0.46 vs. 0.25 in the old design; the penalty led to late hoarding (survival 0.38). Death penalty not adopted.
+- **2026-10-13:** Diagnosis of the B2 trade drop (§11): exploration collapse, eating mistakes, no acceptance of unusable goods. Decided: death penalty 0.5 and entropy coefficient 0.03 in presets B–D; new treatment preset `B_perishable` (spoilage U[0, 0.25], F4). Added `scripts/run_queue.py` (unattended job queue; 2 tests, 52 in total) and `configs/night_queue.txt` for night 2 (B3 vs. B3_perishable, seeds 0–1). End-to-end dry run of the queue at tiny size passed.
+- **2026-10-14:** Night 2 finished (B3, B3_perishable, seeds 0–1; results log §12): barter, no money; survival gate passed nominally through feast-and-fast gaming of the death rule (diagnosed, §11); perishability did not create store-of-value holdings. Housekeeping: removed `SUB_SLEEP` / `SUB_VIDEO` (accidental files from a PowerShell alias clash, `ac` = Add-Content, committed by mistake in c0b3718) and four stray files from the first run of the queue-runner test (backslashes in Windows paths); `scripts/run_queue.py` now rejects backslashes in queue files (1 test, 53 in total).
+- **2026-10-14:** **Continuous subsistence utility** (`preferences.continuous_subsistence`, on in presets B–D; approved): u = α ln(1 + c − γ) below the need, against feast-and-fast gaming of the death rule (§3.4). New treatment presets `B_rare` (F1: 15 goods, 2–3 valued) and `B_rare_perishable` (F1 × F4). `configs/night_queue.txt` = night 3 (2×2 screening, seed 0); dry run at tiny size passed. 3 tests (56 in total).
+- **2026-10-14:** **Agent memory implemented** (approved design: per-good GRU over rounds + private trade experience: received, given, asked for, offered; `model.memory`, off by default; §4.2). Warm starts into memory models are function-preserving (`load_compatible`); runs without memory are bit-identical to before (smoke-run fingerprints). ≈ 1.1× time per iteration. 4 tests (60 in total).
+- **2026-10-14:** **Death mechanics revised (approved):** cumulative hunger debt instead of consecutive deprived rounds (`market.hunger_debt`), and newcomers refill slots empty for 2 rounds (`market.respawn_after`; same position and income, new preferences, no history; archived ledger records keep the ledger balanced); both on in presets B–D, off by default (runs with both off are bit-identical to before). `survival_rate` now counts the agents present at round 0; new metrics `births`, `death_rate`, `population_share`. Night 3 reduced to the two corner runs (iterations ≈ 2× slower). 5 tests (65 in total).
+- **2026-10-14:** Added `docs/HOW_IT_WORKS.md`, a detailed plain-language explanation of every mechanic, the network and the training procedure (user request); it is updated with every change of mechanics or optimisation settings (CLAUDE.md §2.3).

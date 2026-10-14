@@ -24,7 +24,9 @@ class TestLedgerRecords(unittest.TestCase):
         world = EconomyBatch(get_preset("D"), 8)
         roll = collect_rollout(world, RandomPolicy())
         self.assertGreater(world.record.trades()["b"].numel(), 0)
-        torch.testing.assert_close(world.contribution.sum(1), torch.zeros(8, world.G), atol=1e-3, rtol=0)
+        # conservation: current records plus the retired records of agents replaced by newcomers sum to zero
+        balance = world.contribution.sum(1) + world.retired_contribution
+        torch.testing.assert_close(balance, torch.zeros(8, world.G), atol=1e-3, rtol=0)
         torch.testing.assert_close(world.bilateral, -world.bilateral.transpose(1, 2), atol=1e-5, rtol=0)
 
     def test_visibility_follows_ledger_state(self):

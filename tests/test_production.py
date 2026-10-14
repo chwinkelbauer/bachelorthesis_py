@@ -125,8 +125,8 @@ class TestInvariants(unittest.TestCase):
         self.assertTrue((load <= world.capacity + 1e-3).all())
         self.assertTrue((flows.pool >= -1e-5).all() and (flows.pool <= x + 1e-4).all())
         self.assertTrue((x[~world.alive] == 0).all())
-        alive = roll.alive.float()
-        self.assertTrue((alive[1:] <= alive[:-1]).all(), "nobody comes back to life")
+        revived = roll.alive[1:] & ~roll.alive[:-1]
+        self.assertTrue((~revived | roll.born[1:]).all(), "slots come back to life only through a newcomer")
         self.assertTrue((roll.rewards[~roll.alive[:-1]] == 0).all(), "dead agents get no reward")
         self.assertEqual(roll.X.shape[0], world.R + 1)
 
@@ -283,6 +283,7 @@ class TestDeathPenalty(unittest.TestCase):
         from configs.base import MarketConfig
         self.assertEqual(MarketConfig().death_penalty, 0.0)
         cfg = get_preset("B")
+        cfg.preferences.continuous_subsistence = False                             # allows needs >= 1 below
         cfg.preferences.subsistence_range = (5.0, 5.0)                             # high needs: many deaths
         cfg.production.subsistence_buffer_rounds = 0.0
         cfg.market.death_after = 2
@@ -294,6 +295,149 @@ class TestDeathPenalty(unittest.TestCase):
         self.assertTrue(out[0.0].dones.any())
         self.assertTrue(torch.equal(out[0.0].dones, out[0.5].dones))              # same economies and behaviour
         self.assertTrue(torch.allclose(out[0.5].rewards, out[0.0].rewards - 0.5 * out[0.0].dones.float()))
+
+
+class TestContinuousSubsistence(unittest.TestCase):
+    def test_hunger_costs_utility_and_steady_eating_wins(self):
+        from economy.preferences import utility, marginal_utility
+        alpha = torch.tensor([0.3, 0.7])
+        gamma = torch.tensor([0.4, 0.0])                                           # good 0 is a subsistence good
+        x = torch.tensor([0.0, 2.0])
+        self.assertLess(utility(x, alpha, gamma, True), utility(x, alpha, gamma, False))   # hunger hurts
+        y = torch.tensor([1.0, 2.0])                                               # above the need: identical
+        self.assertTrue(torch.allclose(utility(y, alpha, gamma, True), utility(y, alpha, gamma, False)))
+        # eating 5 * gamma once vs. gamma in each of 5 rounds: lumpy wins with the kink, steady wins when continuous
+        steady = 5 * utility(torch.tensor([0.4, 0.0]), alpha, gamma, True)
+        lumpy = 4 * utility(torch.tensor([0.0, 0.0]), alpha, gamma, True) + utility(torch.tensor([2.0, 0.0]), alpha, gamma, True)
+        self.assertGreater(steady, lumpy)
+        lumpy_kink = 4 * utility(torch.tensor([0.0, 0.0]), alpha, gamma) + utility(torch.tensor([2.0, 0.0]), alpha, gamma)
+        self.assertGreater(lumpy_kink, 5 * utility(torch.tensor([0.4, 0.0]), alpha, gamma))
+        # marginal utility is the derivative of the continuous utility
+        z = torch.tensor([0.1, 1.0], requires_grad=True)
+        utility(z, alpha, gamma, True).backward()
+        self.assertTrue(torch.allclose(z.grad, marginal_utility(z.detach(), alpha, gamma, True)))
+
+    def test_needs_must_stay_below_one(self):
+        from economy.preferences import sample_preferences
+        cfg = get_preset("B")
+        self.assertTrue(cfg.preferences.continuous_subsistence)
+        cfg.preferences.subsistence_range = (0.5, 1.2)
+        set_seed(0)
+        self.assertRaises(ValueError, sample_preferences, cfg.preferences, generate_goods(cfg.goods, 2), 4)
+
+    def test_rewards_negative_when_hungry(self):
+        cfg = get_preset("B")
+        cfg.production.subsistence_buffer_rounds = 0.0
+        set_seed(4)
+        world = EconomyBatch(cfg, 4)
+        ro = collect_rollout(world, RandomPolicy())
+        self.assertLess(float(ro.rewards.min()), 0.0)                              # hungry rounds cost utility
+
+
+class TestHungerDebtAndNewcomers(unittest.TestCase):
+    def _world(self, **market):
+        cfg = get_preset("B")
+        for k, v in market.items():
+            setattr(cfg.market, k, v)
+        set_seed(9)
+        world = EconomyBatch(cfg, 2)
+        world.reset()
+        return world
+
+    def _eat(self, world, fraction_of_need):
+        """Agent (0, 0) eats fraction_of_need * gamma of its subsistence good; returns that good's index."""
+        k = int(torch.nonzero(world.gamma[0, 0] > 0)[0])
+        g = float(world.gamma[0, 0, k])
+        world.x[0, 0, k] = 10.0 * g
+        choice = torch.zeros(1, world.G, dtype=torch.long)
+        amount = torch.full((1, world.G), 0.5)
+        choice[0, k] = 1 if fraction_of_need > 0 else 0
+        amount[0, k] = max(fraction_of_need, 1e-6) * g / (10.0 * g)
+        world.consume(torch.tensor([0]), torch.tensor([0]), choice, amount)
+        return k
+
+    def test_partial_meals_count_partially_and_extra_food_repays(self):
+        world = self._world(death_after=3)
+        self._eat(world, 0.5)
+        world.end_round()
+        self.assertAlmostEqual(float(world.deprivation[0, 0]), 0.5, places=4)     # half a round of food missing
+        self._eat(world, 2.0)
+        world.end_round()
+        self.assertAlmostEqual(float(world.deprivation[0, 0]), 0.0, places=4)     # repaid, floored at 0
+        for t in range(3):
+            self.assertTrue(bool(world.alive[0, 0]))
+            self._eat(world, 0.0)
+            died = world.end_round()
+        self.assertTrue(bool(died[0, 0]) and not bool(world.alive[0, 0]))          # 3 rounds of food missing
+
+    def test_old_rule_unchanged_when_off(self):
+        world = self._world(death_after=3, hunger_debt=False)
+        self._eat(world, 0.99)                                                     # knife-edge: counts fully
+        world.end_round()
+        self.assertEqual(float(world.deprivation[0, 0]), 1.0)
+        self._eat(world, 1.0)
+        world.end_round()
+        self.assertEqual(float(world.deprivation[0, 0]), 0.0)                      # full reset
+
+    def test_newcomer_takes_over_the_slot(self):
+        world = self._world(respawn_after=2)
+        alpha_old, income_old = world.alpha[0, 0].clone(), world.income[0, 0].clone()
+        world.contribution[0, 0] += 1.0
+        world.bilateral[0, 1, 0] += 1.0
+        world.alive[0, 0] = False                                                  # agent (0, 0) dies in round 0
+        world.dead_round[0, 0] = 0
+        world.x[0, 0] = 0.0
+        world.record.flows.deaths[0, 0] += 1
+        world.record.flows.initial_deaths[0, 0] += 1
+        for t in (1, 2):
+            world.end_round(); world.begin_round()
+            self.assertFalse(bool(world.alive[0, 0]))                              # empty for 2 rounds
+        world.end_round(); world.begin_round()
+        self.assertTrue(bool(world.alive[0, 0]) and bool(world.born[0, 0]))       # newcomer at the start of round 3
+        self.assertFalse(torch.equal(world.alpha[0, 0], alpha_old))                # new preferences
+        self.assertTrue(torch.equal(world.income[0, 0], income_old))               # same position and income
+        self.assertEqual(float(world.deprivation[0, 0]), 0.0)
+        self.assertGreater(float(world.x[0, 0].sum()), 0.0)                        # starts with income + reserve
+        self.assertEqual(float(world.contribution[0, 0].abs().sum()), 0.0)         # no history
+        self.assertEqual(float(world.bilateral[0, 1, 0].abs().sum()), 0.0)
+        self.assertEqual(float(world.record.flows.births[0, 0]), 1.0)
+        self.assertTrue(torch.allclose(world.useful, usefulness(world.alpha, world.recipe)))
+
+    def test_rollout_metrics_with_newcomers(self):
+        from analysis.money_metrics import compute_metrics
+        from configs.base import MetricsConfig
+        cfg = get_preset("B")
+        cfg.production.subsistence_buffer_rounds = 0.0
+        cfg.market.death_after = 1                                                 # many deaths
+        set_seed(5)
+        world = EconomyBatch(cfg, 4)
+        ro = collect_rollout(world, RandomPolicy())
+        flows = world.record.flows
+        self.assertGreater(float(flows.births.sum()), 0.0)
+        self.assertTrue(bool(ro.born.any()))
+        m = compute_metrics(world.record, MetricsConfig())
+        self.assertAlmostEqual(m["survival_rate"], float(1.0 - flows.initial_deaths.mean()), places=6)
+        self.assertGreater(m["births"], 0.0)
+        self.assertTrue(0.0 < m["population_share"] <= 1.0)
+        self.assertGreater(m["death_rate"], 0.0)
+        self.assertTrue((flows.initial_deaths <= flows.deaths).all())
+
+    def test_memory_resets_for_newcomers(self):
+        from learning.ppo import ppo_update
+        from learning.trainer import build_models
+        cfg = get_preset("quick_B")
+        cfg.model.memory = True
+        cfg.production.subsistence_buffer_rounds = 0.0
+        cfg.market.death_after = 1
+        cfg.market.respawn_after = 0
+        cfg.market.rounds = 6
+        set_seed(2)
+        policy, critic, optimizer = build_models(cfg)
+        world = EconomyBatch(cfg, cfg.ppo.worlds)
+        ro = collect_rollout(world, policy)
+        self.assertTrue(bool(ro.born.any()))
+        stats = ppo_update(ro, world, policy, critic, optimizer, cfg.ppo)
+        self.assertTrue(all(v == v for v in stats.values()))                       # no NaN
 
 
 class TestLearningSessions(unittest.TestCase):

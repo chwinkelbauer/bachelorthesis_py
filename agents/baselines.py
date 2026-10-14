@@ -92,6 +92,11 @@ class _Wrapper:
             self.policy.eval()
         return self
 
+    def __getattr__(self, name):          # memory_size, initial_memory, remember, ... of the wrapped policy
+        if name == "policy":
+            raise AttributeError(name)
+        return getattr(self.policy, name)
+
 
 class RandomTradeNull(_Wrapper):
     def decide(self, z_self, h_partner, tokens, context, dir_mask, resp_mask, actions=None, greedy=False) -> Decision:

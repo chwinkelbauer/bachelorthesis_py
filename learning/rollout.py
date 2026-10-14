@@ -9,10 +9,14 @@ Production economies add a labour phase before and a consumption phase after tra
 
 Every decision is stored with its exact inputs (tokens, context, masks) and the indices needed to recompute the
 differentiable agent embeddings from the round's state snapshot during the PPO update.
+
+Memory (policy.memory_size > 0): at the start of each round the per-good memory is updated from the agent's trade
+experience of the last round (world.experience, stored per round for the PPO update) and appended to the agent's own
+goods tokens and decision tokens; stored decision tokens exclude it (the update recomputes it with gradients).
 """
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 
@@ -35,6 +39,8 @@ class Rollout:
     trade: Dict[str, torch.Tensor]
     labour: Dict[str, torch.Tensor]
     consume: Dict[str, torch.Tensor]
+    experience: Optional[torch.Tensor] = None   # (S, B, N, G, EXPERIENCE_FEATURES) at the start of each round
+    born: Optional[torch.Tensor] = None         # (S, B, N) newcomers that entered at the start of the round
 
 
 def _store(store, **row):
@@ -46,7 +52,11 @@ def _cat(store) -> Dict[str, torch.Tensor]:
     return {k: torch.cat(v) for k, v in store.items()} if store["r"] else {}
 
 
-def _negotiate(world, policy, z, h, r, b, s, p, recv, give, has_offer, turn_id, is_proposer, greedy, store):
+def _with_memory(tokens, mem, b, s):
+    return tokens if mem is None else torch.cat([tokens, mem[b, s]], dim=-1)
+
+
+def _negotiate(world, policy, z, h, r, b, s, p, recv, give, has_offer, turn_id, is_proposer, greedy, store, mem=None):
     D = b.numel()
     turn = torch.full((D,), turn_id, dtype=torch.long)
     has = torch.full((D,), has_offer, dtype=torch.bool)
@@ -54,14 +64,14 @@ def _negotiate(world, policy, z, h, r, b, s, p, recv, give, has_offer, turn_id, 
     x_s, x_p = world.x[b, s], world.x[b, p]
     tokens, context = world.decision_tensors(MODE_TRADE, b, s, p, x_s, x_p, recv, give, has, turn, prop)
     dmask, rmask = direction_mask(x_s, x_p), response_mask(turn)
-    d = policy.decide(z[b, s], h[b, p], tokens, context, dmask, rmask, greedy=greedy)
+    d = policy.decide(z[b, s], h[b, p], _with_memory(tokens, mem, b, s), context, dmask, rmask, greedy=greedy)
     _store(store, r=torch.full((D,), r, dtype=torch.long), b=b, s=s, p=p, tokens=tokens, context=context,
            dir_mask=dmask, resp_mask=rmask, response=d.response, direction=d.direction, amount=d.amount,
            log_prob=d.log_prob)
     return d
 
 
-def _self_decision(world, policy, z, h, r, mode, greedy, store):
+def _self_decision(world, policy, z, h, r, mode, greedy, store, mem=None):
     b, s = torch.nonzero(world.alive, as_tuple=True)
     D, G = b.numel(), world.G
     x_s = world.x[b, s]
@@ -71,16 +81,16 @@ def _self_decision(world, policy, z, h, r, mode, greedy, store):
                                              torch.zeros(D, dtype=torch.long), off)
     if mode == MODE_LABOUR:
         mask = world.labour_mask(b, s, x_s)
-        d = policy.labour(z[b, s], h[b, s], tokens, context, mask, greedy=greedy)
+        d = policy.labour(z[b, s], h[b, s], _with_memory(tokens, mem, b, s), context, mask, greedy=greedy)
     else:
         mask = world.consume_mask(b, s, x_s)
-        d = policy.consume(z[b, s], h[b, s], tokens, context, mask, greedy=greedy)
+        d = policy.consume(z[b, s], h[b, s], _with_memory(tokens, mem, b, s), context, mask, greedy=greedy)
     _store(store, r=torch.full((D,), r, dtype=torch.long), b=b, s=s, tokens=tokens, context=context, mask=mask,
            choice=d.choice, amount=d.amount, log_prob=d.log_prob)
     return b, s, d
 
 
-def _trade_phase(world, policy, z, h, r, greedy, store) -> None:
+def _trade_phase(world, policy, z, h, r, greedy, store, mem=None) -> None:
     b, i, j = world.match()
     if b.numel() == 0:
         return
@@ -89,18 +99,20 @@ def _trade_phase(world, policy, z, h, r, greedy, store) -> None:
     w = world.weight[b]
     zeros = torch.zeros(b.numel(), G)
 
-    d0 = _negotiate(world, policy, z, h, r, b, i, j, zeros, zeros, False, 0, True, greedy, store)
+    d0 = _negotiate(world, policy, z, h, r, b, i, j, zeros, zeros, False, 0, True, greedy, store, mem)
     give_i, want_i = decode_offer(d0.direction, d0.amount, x[b, i], x[b, j], w, world.capacity)
+    world.observe_offer(b, j, give_i, want_i)
 
-    d1 = _negotiate(world, policy, z, h, r, b, j, i, give_i, want_i, True, 1, False, greedy, store)
+    d1 = _negotiate(world, policy, z, h, r, b, j, i, give_i, want_i, True, 1, False, greedy, store, mem)
     give_j, want_j = decode_offer(d1.direction, d1.amount, x[b, j], x[b, i], w, world.capacity)
     accept1 = d1.response == ACCEPT
     countered = torch.nonzero(d1.response == COUNTER).flatten()
+    world.observe_offer(b[countered], i[countered], give_j[countered], want_j[countered])
 
     accept2 = torch.zeros_like(accept1)
     if countered.numel() > 0:
         c = countered
-        d2 = _negotiate(world, policy, z, h, r, b[c], i[c], j[c], give_j[c], want_j[c], True, 2, True, greedy, store)
+        d2 = _negotiate(world, policy, z, h, r, b[c], i[c], j[c], give_j[c], want_j[c], True, 2, True, greedy, store, mem)
         accept2[c] = d2.response == ACCEPT
 
     # holdings change from the proposer's point of view
@@ -120,6 +132,9 @@ def collect_rollout(world: EconomyBatch, policy, greedy: bool = False) -> Rollou
     X = torch.zeros(S, B, N, G)
     DEP = torch.zeros(S, B, N)
     ALIVE = torch.zeros(S, B, N, dtype=torch.bool)
+    EXP = torch.zeros(S, B, N, G, world.experience.shape[-1])
+    BORN = torch.zeros(S, B, N, dtype=torch.bool)
+    mem = policy.initial_memory(B, N, G) if getattr(policy, "memory_size", 0) else None
     rewards = torch.zeros(R, B, N)
     dones = torch.zeros(R, B, N, dtype=torch.bool)
     stores = {"trade": {k: [] for k in TRADE_FIELDS},
@@ -129,17 +144,22 @@ def collect_rollout(world: EconomyBatch, policy, greedy: bool = False) -> Rollou
     for r in range(R):
         world.begin_round()
         X[r], DEP[r], ALIVE[r] = world.x, world.deprivation, world.alive
-        z, h = policy.embed(world.public_tokens(world.x), world.private_tokens(world.x), world.adjacency())
+        EXP[r], BORN[r] = world.experience, world.born
+        private = world.private_tokens(world.x)
+        if mem is not None:
+            mem = policy.remember(world.memory_inputs(world.x), mem.masked_fill(world.born[..., None, None], 0.0))
+            private = torch.cat([private, mem], dim=-1)
+        z, h = policy.embed(world.public_tokens(world.x), private, world.adjacency())
         u_before = world.utility()
 
         if production:
-            b, s, d = _self_decision(world, policy, z, h, r, MODE_LABOUR, greedy, stores["labour"])
+            b, s, d = _self_decision(world, policy, z, h, r, MODE_LABOUR, greedy, stores["labour"], mem)
             world.labour(b, s, d.choice, d.amount)
 
-        _trade_phase(world, policy, z, h, r, greedy, stores["trade"])
+        _trade_phase(world, policy, z, h, r, greedy, stores["trade"], mem)
 
         if production:
-            b, s, d = _self_decision(world, policy, z, h, r, MODE_CONSUME, greedy, stores["consume"])
+            b, s, d = _self_decision(world, policy, z, h, r, MODE_CONSUME, greedy, stores["consume"], mem)
             rewards[r, b, s] = world.consume(b, s, d.choice, d.amount)
 
         dones[r] = world.end_round()
@@ -150,6 +170,8 @@ def collect_rollout(world: EconomyBatch, policy, greedy: bool = False) -> Rollou
 
     if production:
         X[R], DEP[R], ALIVE[R] = world.peek_next_observation(), world.deprivation, world.alive
+        EXP[R] = world.experience
 
     return Rollout(X=X, deprivation=DEP, alive=ALIVE, rewards=rewards, dones=dones, bootstrap=production,
-                   trade=_cat(stores["trade"]), labour=_cat(stores["labour"]), consume=_cat(stores["consume"]))
+                   trade=_cat(stores["trade"]), labour=_cat(stores["labour"]), consume=_cat(stores["consume"]),
+                   experience=EXP, born=BORN)

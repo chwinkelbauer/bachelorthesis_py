@@ -40,20 +40,26 @@ def stage_b() -> ExperimentConfig:
     tier: agent-specific log-normal multipliers with means (0.2, 1, 2) and log-spreads (0.25, 0.75, 1.0), so raw goods
     keep agents alive while processed goods are high-utility, high-variance goods; each agent values 2-5 goods
     (min_processed_valued is available but off).
-    Learning sessions (PRODUCTION_SESSIONS) unlock technology and ramp the death threshold.
-    Rollouts of 24 rounds are truncated and bootstrapped (discount 0.97).
+    Learning sessions (PRODUCTION_SESSIONS) unlock technology and ramp the death threshold. Dying costs a one-off
+    reward of 0.5 (user decision 2026-10-13).
+    Subsistence utility is continuous below the need (hunger costs utility; prevents feast-and-fast gaming of the
+    death rule, 2026-10-14).
+    Death comes from cumulative hunger debt (rounds of missing food >= death_after), and a dead agent's slot is refilled
+    by a newcomer after 2 empty rounds (same position and income, new preferences), so markets stay thick (2026-10-14).
+    Rollouts of 24 rounds are truncated and bootstrapped (discount 0.97). Entropy coefficient 0.03 (0.01 let the policy
+    freeze and trade fall in the B2 runs).
     """
     return ExperimentConfig(
         name="B", stage="B",
         goods=GoodsConfig(raw_consumable_prob=1.0),
         preferences=PreferenceConfig(subsistence=True, subsistence_range=(0.2, 0.5), subsistence_max_tier=0,
                                      goods_valued_range=(2, 5), tier_weights=(0.2, 1.0, 2.0),
-                                     tier_weight_sigma=(0.25, 0.75, 1.0)),
+                                     tier_weight_sigma=(0.25, 0.75, 1.0), continuous_subsistence=True),
         production=ProductionConfig(income=True, processing=True, income_period_range=(1, 4),
                                     subsistence_buffer_rounds=10.0),
-        market=MarketConfig(economy="production", rounds=24),
+        market=MarketConfig(economy="production", rounds=24, death_penalty=0.5, hunger_debt=True, respawn_after=2),
         curriculum=CurriculumConfig(sessions=PRODUCTION_SESSIONS),
-        ppo=PPOConfig(worlds=32, gamma=0.97),
+        ppo=PPOConfig(worlds=32, gamma=0.97, entropy_coef=0.03),
     )
 
 
@@ -62,6 +68,37 @@ def stage_b_constant_income() -> ExperimentConfig:
     cfg = stage_b()
     cfg.name = "B_constant_income"
     cfg.production.income_period_range = (1, 1)
+    return cfg
+
+
+def stage_b_perishable() -> ExperimentConfig:
+    """
+    Stage B treatment F4 (holding costs, Menger / Kiyotaki-Wright): spoilage ~ U[0, 0.25] per round instead of
+    U[0, 0.10]. Food cannot be stockpiled cheaply, so storing value requires a durable good.
+    """
+    cfg = stage_b()
+    cfg.name = "B_perishable"
+    cfg.goods.spoilage_range = (0.0, 0.25)
+    return cfg
+
+
+def stage_b_rare() -> ExperimentConfig:
+    """
+    Stage B treatment F1 (rarer double coincidence, Jevons): 15 goods (6 raw / 5 / 4) instead of 9 and 2-3 valued goods
+    per agent instead of 2-5. Neighbour pairs whose incomes are mutually useful: 0.28 instead of 0.66.
+    """
+    cfg = stage_b()
+    cfg.name = "B_rare"
+    cfg.goods.goods_per_tier = (6, 5, 4)
+    cfg.preferences.goods_valued_range = (2, 3)
+    return cfg
+
+
+def stage_b_rare_perishable() -> ExperimentConfig:
+    """Stage B treatments F1 + F4 combined (Kiyotaki-Wright-like: rare double coincidence and storage costs)."""
+    cfg = stage_b_rare()
+    cfg.name = "B_rare_perishable"
+    cfg.goods.spoilage_range = (0.0, 0.25)
     return cfg
 
 
@@ -159,6 +196,9 @@ PRESETS: Dict[str, Callable[[], ExperimentConfig]] = {
     "A_full_info": stage_a_full_info,
     "B": stage_b,
     "B_constant_income": stage_b_constant_income,
+    "B_perishable": stage_b_perishable,
+    "B_rare": stage_b_rare,
+    "B_rare_perishable": stage_b_rare_perishable,
     "C": stage_c,
     "C_no_specialization": stage_c_no_specialization,
     "D": stage_d,

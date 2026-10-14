@@ -10,6 +10,13 @@ Policy (decentralised execution):
                      labour:  {idle} + per good {harvest, process}; Beta amount (fraction of maximal processing)
                      consume: per good {keep, consume}; Beta amount (fraction of holdings)
 Critic (centralised training): V_i = MLP([h_i, mean_j h_j]) with h = GATv2^L(Enc(all private tokens)).
+
+Optional memory (cfg.memory): every agent keeps a state mu_ik per good k, updated once per round by a GRU cell from the
+agent's own trade experience of the last round, the good's properties and its holdings:
+    mu_ik,t = GRU(mu_ik,t-1, [experience_ik,t, properties_k, ln(1 + x_ik,t)]),   mu_ik,0 = 0
+The state is appended to the agent's own goods tokens (agent embedding) and to its decision tokens (per-good heads).
+It is shared over goods (permutation-equivariant) and trained end to end through all rounds of an episode. The critic
+additionally sees the raw experience features. With memory off the model is exactly the memory-free model.
 """
 
 from dataclasses import dataclass
@@ -23,6 +30,7 @@ from agents.layers import GoodsSetEncoder, DenseGATv2, mlp, MASK_VALUE
 from configs.base import ModelConfig
 from economy.observations import (
     PUBLIC_FEATURES, PRIVATE_FEATURES, DECISION_TOKEN_FEATURES, DECISION_CONTEXT_FEATURES,
+    EXPERIENCE_FEATURES, MEMORY_INPUT_FEATURES,
 )
 from economy.trade import COUNTER, NONE
 
@@ -68,11 +76,14 @@ class PolicyNet(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
         H = cfg.hidden
+        M = cfg.memory_size if cfg.memory else 0
+        self.memory_size = M
+        self.memory = nn.GRUCell(MEMORY_INPUT_FEATURES, M) if M else None
         self.pub_enc = GoodsSetEncoder(PUBLIC_FEATURES, H)
-        self.priv_enc = GoodsSetEncoder(PRIVATE_FEATURES, H)
+        self.priv_enc = GoodsSetEncoder(PRIVATE_FEATURES + M, H)
         self.gnn = nn.ModuleList([DenseGATv2(H, cfg.attn_heads) for _ in range(cfg.gnn_layers)])
         self.agent_mlp = nn.Sequential(mlp(2 * H, H, H), nn.LayerNorm(H))
-        self.token_in = nn.Linear(DECISION_TOKEN_FEATURES, H)
+        self.token_in = nn.Linear(DECISION_TOKEN_FEATURES + M, H)
         self.ctx_in = mlp(DECISION_CONTEXT_FEATURES + 2 * H, H, H)
         layer = nn.TransformerEncoderLayer(H, cfg.attn_heads, 2 * H, dropout=0.0, batch_first=True, norm_first=True)
         self.transformer = nn.TransformerEncoder(layer, cfg.transformer_layers, enable_nested_tensor=False)
@@ -87,6 +98,15 @@ class PolicyNet(nn.Module):
         # consumption heads
         self.consume_head = nn.Linear(H, 2)
         self.consume_amount_head = nn.Linear(H, 2)
+
+    # ---------------------------------------------------------------- memory
+    def initial_memory(self, S: int, N: int, G: int) -> torch.Tensor:
+        return torch.zeros(S, N, G, self.memory_size)
+
+    def remember(self, inputs: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
+        """One memory update: inputs (S, N, G, MEMORY_INPUT_FEATURES), memory (S, N, G, M) -> (S, N, G, M)."""
+        shape = memory.shape
+        return self.memory(inputs.reshape(-1, inputs.shape[-1]), memory.reshape(-1, shape[-1])).view(shape)
 
     # ---------------------------------------------------------------- embeddings
     def embed(self, public_tokens: torch.Tensor, private_tokens: torch.Tensor, adj: torch.Tensor):
@@ -179,7 +199,8 @@ class CriticNet(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
         H = cfg.hidden
-        self.enc = GoodsSetEncoder(PRIVATE_FEATURES, H)
+        self.extra_features = EXPERIENCE_FEATURES if cfg.memory else 0   # raw trade experience (memory runs)
+        self.enc = GoodsSetEncoder(PRIVATE_FEATURES + self.extra_features, H)
         self.gnn = nn.ModuleList([DenseGATv2(H, cfg.attn_heads) for _ in range(cfg.gnn_layers)])
         self.head = mlp(2 * H, H, 1)
 
